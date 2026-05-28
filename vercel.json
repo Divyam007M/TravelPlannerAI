@@ -1,6 +1,5 @@
 {
   "version": 2,
-  "comment": "Deploy the combined app (FastAPI serves the built React frontend). This uses Vercel's Python runtime for the API and static output for the UI.",
   "builds": [
     {
       "src": "frontend/package.json",
