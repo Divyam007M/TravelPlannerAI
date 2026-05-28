@@ -203,6 +203,25 @@ tools = [estimate_budget, get_packing_list]
 llm_with_tools = llm.bind_tools(tools)
 tool_map = {t.name: t for t in tools}
 
+# Argument types the LLM might pass as strings — coerce them before invocation
+_ARG_TYPES: dict[str, dict[str, type]] = {
+    "estimate_budget": {"days": int, "travelers": int},
+    "get_packing_list": {},
+}
+
+
+def _coerce_args(tool_name: str, args: dict) -> dict:
+    """Cast tool arguments to their expected Python types to handle LLM string leakage."""
+    coercions = _ARG_TYPES.get(tool_name, {})
+    coerced = dict(args)
+    for key, cast in coercions.items():
+        if key in coerced and not isinstance(coerced[key], cast):
+            try:
+                coerced[key] = cast(coerced[key])
+            except (ValueError, TypeError):
+                pass  # leave the original value; let the tool surface a meaningful error
+    return coerced
+
 
 class TravelState(TypedDict):
     messages: Annotated[List, operator.add]
@@ -221,7 +240,8 @@ def run_tools(state: TravelState) -> dict:
     last = state["messages"][-1]
     results = []
     for tc in last.tool_calls:
-        res = tool_map[tc["name"]].invoke(tc["args"])
+        args = _coerce_args(tc["name"], tc["args"])
+        res = tool_map[tc["name"]].invoke(args)
         results.append(ToolMessage(content=str(res), tool_call_id=tc["id"]))
     return {"messages": results}
 
