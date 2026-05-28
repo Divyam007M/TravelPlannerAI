@@ -1,19 +1,8 @@
 [build]
 builder = "nixpacks"
-# Install Python deps + build the React frontend
-buildCommand = "pip install -r backend/requirements.txt && cd frontend && npm install && npm run build"
 
 [deploy]
-# Run FastAPI from the backend folder — it serves the built frontend/dist too
-startCommand = "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 60
 restartPolicyType = "on_failure"
-
-[[envVars]]
-name = "GROQ_API_KEY"
-value = ""                   # Set this in Railway dashboard → Variables
-
-[[envVars]]
-name = "ALLOWED_ORIGINS"
-value = "*"
