@@ -43,12 +43,16 @@ export default function App() {
       const data = await res.json();
       setMessages([...updatedMessages, { role: 'assistant', content: data.response }]);
     } catch (err) {
+      const isConfigError = !import.meta.env.VITE_API_URL && err.message.includes('405');
+      const hint = isConfigError
+        ? '\n\n> **Deployment fix:** Set `VITE_API_URL` in Vercel → Settings → Environment Variables to your Railway backend URL, then redeploy.'
+        : '\n\n> Make sure the backend is running: `python start.py`';
       setError(err.message);
       setMessages([
         ...updatedMessages,
         {
           role: 'assistant',
-          content: `⚠️ **Error:** ${err.message}\n\nMake sure the backend is running:\n\`\`\`\ncd backend\npython main.py\n\`\`\``,
+          content: `⚠️ **Error:** ${err.message}${hint}`,
         },
       ]);
     } finally {
