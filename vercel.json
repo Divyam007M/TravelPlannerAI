@@ -1,14 +1,11 @@
 {
   "version": 2,
-  "name": "wander-ai",
-  "builds": [
-    {
-      "src": "frontend/dist/**",
-      "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "/frontend/dist/$1" }
+  "comment": "Root-level Vercel config — tells Vercel the frontend lives in /frontend.",
+  "buildCommand": "cd frontend && npm install && npm run build",
+  "outputDirectory": "frontend/dist",
+  "framework": null,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
   ],
   "env": {
     "VITE_API_URL": "@wander_api_url"
