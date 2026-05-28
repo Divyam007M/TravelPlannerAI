@@ -4,10 +4,8 @@ import ChatWindow from './components/ChatWindow';
 import InputBar from './components/InputBar';
 import SuggestionChips from './components/SuggestionChips';
 
-// Dev:  leave VITE_API_URL unset → Vite proxy forwards /api to localhost:8000
-// Prod: set VITE_API_URL to your Railway backend URL in Vercel env vars
-//       e.g. https://wander-ai-backend.railway.app
-const API_BASE = import.meta.env.VITE_API_URL || '';
+// Strip any trailing slash so fetch URLs never get double-slashes
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 
 export default function App() {
   const [messages, setMessages] = useState([]);
