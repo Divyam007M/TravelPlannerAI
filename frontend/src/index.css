@@ -1,0 +1,145 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: #070b14;
+    color: #e2e8f0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(99, 102, 241, 0.35);
+    border-radius: 10px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(99, 102, 241, 0.6);
+  }
+}
+
+@layer components {
+  /* Glass card */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+  }
+
+  /* AI message markdown styles */
+  .ai-message-content h1,
+  .ai-message-content h2,
+  .ai-message-content h3 {
+    font-weight: 700;
+    margin: 0.75rem 0 0.4rem;
+    color: #e2e8f0;
+  }
+  .ai-message-content h1 { font-size: 1.15rem; }
+  .ai-message-content h2 { font-size: 1.05rem; }
+  .ai-message-content h3 { font-size: 0.95rem; }
+
+  .ai-message-content p {
+    margin: 0.4rem 0;
+    line-height: 1.65;
+    color: #cbd5e1;
+  }
+
+  .ai-message-content ul,
+  .ai-message-content ol {
+    margin: 0.4rem 0 0.4rem 1.25rem;
+  }
+
+  .ai-message-content li {
+    margin: 0.2rem 0;
+    color: #cbd5e1;
+    line-height: 1.6;
+  }
+
+  .ai-message-content strong,
+  .ai-message-content b {
+    color: #e2e8f0;
+    font-weight: 600;
+  }
+
+  .ai-message-content em { color: #94a3b8; }
+
+  .ai-message-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.75rem 0;
+    font-size: 0.85rem;
+  }
+
+  .ai-message-content th {
+    background: rgba(99, 102, 241, 0.2);
+    padding: 0.45rem 0.75rem;
+    text-align: left;
+    font-weight: 600;
+    color: #a5bbfc;
+    border-bottom: 1px solid rgba(99,102,241,0.3);
+  }
+
+  .ai-message-content td {
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    color: #cbd5e1;
+  }
+
+  .ai-message-content tr:last-child td { border-bottom: none; }
+
+  .ai-message-content code {
+    background: rgba(99,102,241,0.15);
+    color: #a5bbfc;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-family: 'Fira Code', monospace;
+  }
+
+  .ai-message-content hr {
+    border: none;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    margin: 0.75rem 0;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(135deg, #60a5fa, #a78bfa, #f472b6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .glow-purple {
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.25), 0 0 60px rgba(99, 102, 241, 0.08);
+  }
+
+  .glow-blue {
+    box-shadow: 0 0 20px rgba(14, 165, 233, 0.2);
+  }
+}

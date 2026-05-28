@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "name": "wander-ai",
+  "builds": [
+    {
+      "src": "frontend/dist/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "/frontend/dist/$1" }
+  ],
+  "env": {
+    "VITE_API_URL": "@wander_api_url"
+  }
+}
