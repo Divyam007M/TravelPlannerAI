@@ -4,7 +4,8 @@ import ChatWindow from './components/ChatWindow';
 import InputBar from './components/InputBar';
 import SuggestionChips from './components/SuggestionChips';
 
-// Strip any trailing slash so fetch URLs never get double-slashes
+// Combined Vercel deploy: API is on same domain, so API_BASE = '' (relative /api/...)
+// Separate deploy: set VITE_API_URL to your backend URL in Vercel env vars
 const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 
 export default function App() {
