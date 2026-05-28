@@ -2,7 +2,6 @@ langchain-groq>=1.1.0
 langchain-core>=1.2.0
 langgraph>=1.1.0
 fastapi>=0.110.0
-uvicorn>=0.29.0
 python-dotenv>=1.0.0
 aiofiles>=23.0.0
 mangum>=0.17.0

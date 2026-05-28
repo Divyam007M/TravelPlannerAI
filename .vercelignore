@@ -1,0 +1,10 @@
+# Keep Vercel function bundle lean
+frontend/node_modules
+frontend/dist
+__pycache__
+**/__pycache__
+*.pyc
+.idea
+.git
+*.log
+backend/__pycache__
