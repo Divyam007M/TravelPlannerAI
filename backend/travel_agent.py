@@ -11,18 +11,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# API key is loaded exclusively from the .env file (never hardcoded)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise EnvironmentError(
-        "GROQ_API_KEY is not set. "
-        "Create backend/.env with: GROQ_API_KEY=your_key_here"
-    )
+# API key is loaded from environment or .env
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 llm = ChatGroq(
     model="qwen/qwen3.8-27b",
     temperature=0.4,
-    api_key=GROQ_API_KEY,
+    api_key=GROQ_API_KEY or "not_set",
 )
 
 SYSTEM_PROMPT = """You are WanderAI — an expert global travel planner with encyclopedic knowledge of every city, country, and destination on Earth.
@@ -228,6 +223,11 @@ class TravelState(TypedDict):
 
 
 def travel_agent(state: TravelState) -> dict:
+    if not os.getenv("GROQ_API_KEY"):
+        raise ValueError(
+            "GROQ_API_KEY environment variable is missing. "
+            "Please configure GROQ_API_KEY in Vercel -> Settings -> Environment Variables."
+        )
     messages = state["messages"]
     # Ensure system message is first
     if not messages or not isinstance(messages[0], SystemMessage):
