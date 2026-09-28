@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("🏖️ AI Travel Planner")
-st.caption("Plan your perfect Indian trip with AI ✈️  |  Powered by LangGraph + Ollama (llama3.1)")
+st.caption("Plan your perfect trip with AI ✈️  |  Powered by LangGraph + Ollama ")
 
 # ── Session State ─────────────────────────────────────────────────
 # chat_history stores dicts for display: {"role": "user"|"assistant", "content": "..."}
