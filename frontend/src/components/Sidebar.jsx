@@ -94,7 +94,7 @@ export default function Sidebar({ onClear, messageCount }) {
         </button>
 
         <p className="text-center text-[10px] text-slate-600">
-          Powered by Groq · LLaMA 3.3 70B
+          Powered by Groq · Qwen 3.8 27B
         </p>
       </div>
     </aside>

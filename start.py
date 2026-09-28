@@ -32,6 +32,14 @@ import time
 import webbrowser
 from pathlib import Path
 
+# Ensure UTF-8 output on Windows terminal
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"
+
 # ── ANSI colours (pure ASCII escape sequences) ────────────────────
 R  = "\033[0m"
 B  = "\033[1m"
