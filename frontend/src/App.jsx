@@ -42,10 +42,16 @@ export default function App() {
       const data = await res.json();
       setMessages([...updatedMessages, { role: 'assistant', content: data.response }]);
     } catch (err) {
-      const isConfigError = !import.meta.env.VITE_API_URL && err.message.includes('405');
-      const hint = isConfigError
-        ? '\n\n> **Deployment fix:** Set `VITE_API_URL` in Vercel → Settings → Environment Variables to your Railway backend URL, then redeploy.'
-        : '\n\n> Make sure the backend is running: `python start.py`';
+      const isDeployed = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+      let hint = '';
+      if (isDeployed) {
+        hint = '\n\n> 💡 **Deployment Checklist:**\n' +
+               '> 1. Ensure **`GROQ_API_KEY`** is added in **Vercel → Settings → Environment Variables**.\n' +
+               '> 2. For full-stack Vercel deployment, ensure **`VITE_API_URL`** is **empty** (or removed) in Vercel settings so requests route to relative `/api` serverless functions.\n' +
+               '> 3. If backend is hosted separately (e.g. Railway/Render), set **`VITE_API_URL`** to your live backend URL in Vercel settings and redeploy.';
+      } else {
+        hint = '\n\n> Make sure the local backend is running: `python start.py`';
+      }
       setError(err.message);
       setMessages([
         ...updatedMessages,
