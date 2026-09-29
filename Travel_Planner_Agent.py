@@ -1,16 +1,12 @@
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
+"""Server-side LangGraph planner with curated, non-live India travel tools."""
+import os
 from typing import TypedDict, Annotated, List
 import operator
 from langgraph.graph import StateGraph, START, END
-from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import tool
 
-# ── LLM ──────────────────────────────────────────────────────────
-# Uses locally running Ollama — make sure `ollama serve` is running
-# and you have pulled the model: `ollama pull llama3.1`
-llm = ChatOllama(model="llama3.1:latest", temperature=0.3)
+SYSTEM_INSTRUCTION = """You are WanderAI, a practical India travel planner. Give concise, structured plans with day-by-day suggestions and INR budget estimates when useful. Use tools for supported destination notes, budgets and packing. Ask for essential missing details (destination, days, group size or budget); otherwise state assumptions. Built-in facts and budget figures are static estimates, not live prices, weather, hours or availability. Never claim to make bookings or verify reservations. Avoid inventing live facts."""
 
 
 # ── Tools ─────────────────────────────────────────────────────────
@@ -40,7 +36,10 @@ def get_city_info(city: str) -> str:
         "Jaisalmer": "Golden City. Famous for: sand dunes, desert safari, Jaisalmer Fort. Best time: Oct-Mar.",
         "Leh": "High-altitude desert. Famous for: Pangong Lake, monasteries, bike trips. Best time: May-Sep.",
     }
-    return cities.get(city, f"{city}: Beautiful destination. Always worth visiting!")
+    match = next((name for name in cities if name.casefold() == str(city).strip().casefold()), None)
+    if not match:
+        return f"No built-in notes for {city!r}. Supported destinations: {', '.join(cities)}."
+    return f"{match}: {cities[match]} General notes only; check current conditions and opening hours."
 
 
 @tool
@@ -59,16 +58,21 @@ def estimate_budget(city: str, days: int, travel_class: str) -> str:
         "mid":    {"hotel": 3000, "food": 1000, "activities": 900},
         "luxury": {"hotel": 8000, "food": 4000, "activities": 2000},
     }
-    # Normalize input — strip extra text like "mid-range" -> "mid"
-    normalized = travel_class.lower().replace("-range", "").strip()
-    costs = base_costs.get(normalized, base_costs["mid"])
+    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 60:
+        return "Invalid day count. Provide a whole number from 1 to 60."
+    if not str(city).strip():
+        return "A destination is required for the estimate."
+    normalized = str(travel_class).lower().replace("-range", "").strip()
+    if normalized not in base_costs:
+        return "Unsupported budget tier. Choose low, mid or luxury."
+    costs = base_costs[normalized]
     daily = sum(costs.values())
     total = daily * days
     return (
-        f"For {days} days in {city} ({travel_class} class): "
+        f"Static estimate per person for {days} days in {city.strip()} ({normalized} tier): "
         f"Hotel ₹{costs['hotel']}/day + Food ₹{costs['food']}/day + "
         f"Activities ₹{costs['activities']}/day = ₹{daily}/day. "
-        f"Total: ₹{total:,}"
+        f"Total: ₹{total:,}. Excludes transport to the destination, taxes and seasonal changes; verify actual prices."
     )
 
 
@@ -86,15 +90,13 @@ def get_packing_list(destination_type: str) -> str:
         "city":     "Comfortable walking shoes, smart casuals, power bank, camera",
         "heritage": "Conservative clothing, comfortable footwear, water bottle, guidebook",
     }
-    return lists.get(
-        destination_type.lower(),
-        "Standard travel items + weather-appropriate clothing"
-    )
+    kind = str(destination_type).strip().lower()
+    return (f"General {kind} packing list: {lists[kind]}. Check actual conditions before departure."
+            if kind in lists else "Unsupported destination type. Choose beach, mountain, city or heritage.")
 
 
 # ── Graph setup ───────────────────────────────────────────────────
 tools = [get_city_info, estimate_budget, get_packing_list]
-llm_with_tools = llm.bind_tools(tools)
 tool_map = {t.name: t for t in tools}
 
 
@@ -102,35 +104,39 @@ class TravelState(TypedDict):
     messages: Annotated[List, operator.add]
 
 
-def travel_agent(state: TravelState) -> dict:
-    print(f"  [travel_agent] Planning... ({len(state['messages'])} messages)")
-    response = llm_with_tools.invoke(state["messages"])
-    return {"messages": [response]}
+def build_graph(llm):
+    """Build a fresh graph; the caller owns the per-session message history."""
+    bound = llm.bind_tools(tools)
+
+    def travel_agent(state: TravelState) -> dict:
+        response = bound.invoke([SystemMessage(content=SYSTEM_INSTRUCTION), *state["messages"]])
+        return {"messages": [response]}
+
+    def run_tools(state: TravelState) -> dict:
+        results = []
+        for tc in state["messages"][-1].tool_calls:
+            try:
+                selected = tool_map.get(tc.get("name"))
+                content = str(selected.invoke(tc.get("args", {}))) if selected else "Unknown tool requested."
+            except Exception:
+                content = "Invalid tool arguments. Check supported values and try again."
+            results.append(ToolMessage(content=content, tool_call_id=tc.get("id") or "unknown"))
+        return {"messages": results}
+
+    tg = StateGraph(TravelState)
+    tg.add_node("agent", travel_agent)
+    tg.add_node("tools", run_tools)
+    tg.add_edge(START, "agent")
+    tg.add_conditional_edges("agent", lambda s: "tools" if getattr(s["messages"][-1], "tool_calls", []) else "end", {"tools": "tools", "end": END})
+    tg.add_edge("tools", "agent")
+    return tg.compile()
 
 
-def run_tools(state: TravelState) -> dict:
-    last = state["messages"][-1]
-    results = []
-    for tc in last.tool_calls:
-        print(f"  [tools] Calling: {tc['name']}({tc['args']})")
-        res = tool_map[tc["name"]].invoke(tc["args"])
-        results.append(ToolMessage(content=str(res), tool_call_id=tc["id"]))
-    return {"messages": results}
-
-
-def route(state: TravelState) -> str:
-    last = state["messages"][-1]
-    return "tools" if getattr(last, "tool_calls", []) else "end"
-
-
-# Build and compile the graph
-tg = StateGraph(TravelState)
-tg.add_node("agent", travel_agent)
-tg.add_node("tools", run_tools)
-tg.add_edge(START, "agent")
-tg.add_conditional_edges("agent", route, {"tools": "tools", "end": END})
-tg.add_edge("tools", "agent")
-travel_graph = tg.compile()
+def make_groq_graph():
+    from langchain_groq import ChatGroq
+    if not os.getenv("GROQ_API_KEY", "").strip():
+        raise RuntimeError("GROQ_API_KEY is missing")
+    return build_graph(ChatGroq(model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"), temperature=0.3, timeout=45, max_retries=1))
 
 
 # ── CLI entry point (NOT executed on import by Agent_app.py) ──────
@@ -140,7 +146,5 @@ if __name__ == "__main__":
         "Can you: 1) Tell me about Goa, 2) Estimate the budget, "
         "3) Give me a packing list. Create a complete trip summary."
     )
-    print("🏖️ TRAVEL PLANNER AGENT\n" + "=" * 50)
-    result = travel_graph.invoke({"messages": [HumanMessage(content=query)]})
-    print("\n📑 FINAL PLAN:\n")
+    result = make_groq_graph().invoke({"messages": [HumanMessage(content=query)]})
     print(result["messages"][-1].content)

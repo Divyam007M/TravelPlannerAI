@@ -83,7 +83,7 @@ def stream(proc: subprocess.Popen, tag: str, colour: str, filter_fn=None):
         threading.Thread(target=_read, args=(pipe,), daemon=True).start()
 
 
-def stop_all(signum=None, frame=None):
+def stop_all(signum=None, frame=None, exit_code=0):
     print(f"\n{RD}{B}Shutting down...{R}")
     for p in processes:
         try:
@@ -97,16 +97,47 @@ def stop_all(signum=None, frame=None):
         except Exception:
             pass
     print(f"{DM}All stopped. Goodbye!{R}\n")
-    sys.exit(0)
+    sys.exit(exit_code)
 
 
 def check_env():
-    if not (BACKEND / ".env").exists():
-        print(f"\n{RD}{B}[ERROR]{R} backend/.env not found!")
-        print(f"{YL}  Create it:{R}")
-        print(f"    copy backend\\.env.example backend\\.env")
-        print(f"    (then fill in your GROQ_API_KEY)\n")
-        sys.exit(1)
+    from dotenv import dotenv_values
+    file_key = dotenv_values(BACKEND / ".env").get("GROQ_API_KEY") or ""
+    configured = (os.getenv("GROQ_API_KEY") or file_key).strip()
+    if not configured or configured == "your_groq_api_key_here":
+        raise SystemExit("GROQ_API_KEY is missing. Copy backend/.env.example to backend/.env, add your key, then retry.")
+
+
+def check_setup():
+    try:
+        import fastapi, langchain_groq, langgraph, uvicorn, dotenv  # noqa: F401
+    except ImportError as exc:
+        raise SystemExit(f"Missing Python dependency: {exc}. Run: python -m pip install -r requirements.txt") from None
+    if not FRONTEND.is_dir() or not (FRONTEND / "package.json").exists():
+        raise SystemExit("Frontend source missing: expected frontend/package.json")
+    if not shutil.which(NPM):
+        raise SystemExit("npm is missing. Install Node.js 20.19+ or 22.12+ and retry.")
+    if not (FRONTEND / "node_modules").is_dir():
+        log("setup", YL, "Installing frontend dependencies...")
+        result = subprocess.run([NPM, "install"], cwd=str(FRONTEND))
+        if result.returncode:
+            raise SystemExit("npm install failed. Run it in frontend/ to see the error.")
+
+
+def wait_for_http(url, process, seconds=20):
+    import urllib.request
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if process.poll() is not None:
+            raise RuntimeError(f"Process exited with code {process.returncode} before {url} was ready")
+        try:
+            with urllib.request.urlopen(url, timeout=1) as response:
+                if response.status == 200:
+                    return
+        except Exception:
+            pass
+        time.sleep(0.3)
+    raise RuntimeError(f"Timed out waiting for {url}. Check server output and port availability.")
 
 
 def get_local_ip() -> str:
@@ -143,7 +174,7 @@ def print_urls(app_url: str, api_url: str, network_url: str = "", pub_url: str =
 
 # ── Frontend build ────────────────────────────────────────────────
 def build_frontend(force: bool = False):
-    if DIST.is_dir() and not force:
+    if (DIST / "index.html").is_file() and not force:
         log("build", GR, f"Frontend already built. Skipping. (--rebuild to force)")
         return True
 
@@ -221,6 +252,7 @@ def open_tunnel(app_url: str, port: int) -> str:
 def run_combined(args):
     """Build frontend once, run ONE FastAPI server that serves everything."""
     print_banner("Combined (single server on :8000)")
+    check_setup()
     check_env()
 
     if not build_frontend(force=args.rebuild):
@@ -244,21 +276,13 @@ def run_combined(args):
 
     stream(server, "server", CY, filter_fn=_filter)
 
-    # Poll until /api/health responds
     log("server", CY, "Waiting for server to be ready...")
-    for _ in range(20):
-        time.sleep(0.5)
-        if server.poll() is not None:
-            log("server", RD, f"Server crashed (exit {server.returncode}). Check backend/.env")
-            sys.exit(1)
-        try:
-            import urllib.request
-            urllib.request.urlopen("http://localhost:8000/api/health", timeout=1)
-            break
-        except Exception:
-            pass
-    else:
-        log("server", YL, "Server is taking longer than usual — continuing anyway...")
+    try:
+        wait_for_http("http://127.0.0.1:8000/api/health", server)
+        wait_for_http("http://127.0.0.1:8000/", server)
+    except RuntimeError as exc:
+        log("server", RD, str(exc))
+        stop_all(exit_code=1)
 
     log("server", GR, "Server is up.")
 
@@ -278,7 +302,7 @@ def run_combined(args):
         while True:
             if server.poll() is not None:
                 log("server", RD, f"Server exited unexpectedly (code {server.returncode}).")
-                stop_all()
+                stop_all(exit_code=1)
             time.sleep(1)
     except KeyboardInterrupt:
         stop_all()
@@ -288,6 +312,7 @@ def run_combined(args):
 def run_dev(args):
     """Dev mode: Vite (HMR on :5173) + FastAPI (:8000) separately."""
     print_banner("Dev (Vite :5173  |  FastAPI :8000)")
+    check_setup()
     check_env()
 
     log("backend", CY, "Starting FastAPI on http://localhost:8000 ...")
@@ -306,17 +331,16 @@ def run_dev(args):
             log("backend", GR, line)
 
     stream(backend, "backend", CY, filter_fn=_be_filter)
-    time.sleep(2)
-
-    if backend.poll() is not None:
-        log("backend", RD, "Backend crashed. Is GROQ_API_KEY set in backend/.env?")
-        sys.exit(1)
+    try:
+        wait_for_http("http://127.0.0.1:8000/api/health", backend)
+    except RuntimeError as exc:
+        log("backend", RD, str(exc))
+        stop_all(exit_code=1)
     log("backend", GR, "Backend up.")
 
     log("frontend", YL, "Starting Vite on http://localhost:5173 (--host enabled) ...")
-    vite_ready = threading.Event()
     frontend = subprocess.Popen(
-        [NPM, "run", "dev", "--", "--host"],
+        [NPM, "run", "dev"],
         cwd=str(FRONTEND),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
@@ -325,17 +349,14 @@ def run_dev(args):
     def _fe_filter(line: str):
         # Vite outputs arrow chars — decode to ASCII friendly form
         safe = line.encode("ascii", errors="replace").decode("ascii")
-        if any(k in safe for k in ("ready", "Local", "Network", ">")):
-            log("frontend", YL, safe)
-            if "ready" in safe or "localhost" in safe:
-                vite_ready.set()
+        log("frontend", RD if "error" in safe.lower() else YL, safe)
 
     stream(frontend, "frontend", YL, filter_fn=_fe_filter)
-    vite_ready.wait(timeout=20)
-
-    if frontend.poll() is not None:
-        log("frontend", RD, "Frontend failed to start.")
-        stop_all()
+    try:
+        wait_for_http("http://127.0.0.1:5173/", frontend)
+    except RuntimeError as exc:
+        log("frontend", RD, str(exc))
+        stop_all(exit_code=1)
 
     pub_url = ""
     if args.tunnel:
@@ -353,10 +374,10 @@ def run_dev(args):
         while True:
             if backend.poll() is not None:
                 log("backend", RD, f"Backend exited (code {backend.returncode}).")
-                stop_all()
+                stop_all(exit_code=1)
             if frontend.poll() is not None:
                 log("frontend", RD, f"Frontend exited (code {frontend.returncode}).")
-                stop_all()
+                stop_all(exit_code=1)
             time.sleep(1)
     except KeyboardInterrupt:
         stop_all()

@@ -2,17 +2,25 @@ import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
 
 # Import the compiled LangGraph travel agent
-from Travel_Planner_Agent import travel_graph
+from Travel_Planner_Agent import make_groq_graph
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv(Path(__file__).parent / "backend" / ".env")
+
+@st.cache_resource
+def get_graph():
+    return make_groq_graph()
 
 # ── Page Config ───────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI Travel Planner",
+    page_title="WanderAI",
     page_icon="🏖️",
     layout="centered",
 )
 
 st.title("🏖️ AI Travel Planner")
-st.caption("Plan your perfect trip with AI ✈️  |  Powered by LangGraph + Ollama ")
+st.caption("Plan India travel with LangGraph + Groq. Notes and prices are estimates.")
 
 # ── Session State ─────────────────────────────────────────────────
 # chat_history stores dicts for display: {"role": "user"|"assistant", "content": "..."}
@@ -42,7 +50,7 @@ if user_input:
     # 3. Invoke the LangGraph agent with full conversation history
     with st.spinner("Planning your trip... ✈️"):
         try:
-            result = travel_graph.invoke(
+            result = get_graph().invoke(
                 {"messages": st.session_state.lc_messages}
             )
             # The last message in the result is the final AI response
@@ -53,12 +61,9 @@ if user_input:
             # (tool calls, tool results, and final AI reply are all included)
             st.session_state.lc_messages = result["messages"]
 
-        except Exception as e:
-            response_text = (
-                f"⚠️ Something went wrong: `{e}`\n\n"
-                "Please make sure **Ollama is running** (`ollama serve`) "
-                "and the model is pulled (`ollama pull llama3.1`)."
-            )
+        except Exception:
+            st.session_state.lc_messages.pop()
+            response_text = "The planner could not respond. Check the server-side Groq configuration and try again."
 
     # 4. Show and store the assistant's reply
     st.session_state.chat_history.append({"role": "assistant", "content": response_text})
@@ -87,4 +92,4 @@ with st.sidebar:
         st.session_state.lc_messages = []
         st.rerun()
     st.divider()
-    st.caption("Requires Ollama running locally with `llama3.1` model.")
+    st.caption("Optional legacy interface. Install Streamlit separately; set GROQ_API_KEY on the server.")
