@@ -23,6 +23,8 @@ The optional legacy Streamlit interface uses the same Groq agent. Install `strea
 
 Messages must be 1–4000 characters after trimming. Local sessions are held in process memory and vanish on restart. Calls within one local session are serialized; different sessions are isolated. Vercel functions use a stateless path because instances can change between requests: the browser sends up to ten complete visible exchanges for context. Only user and assistant text travels to the browser; tool calls, tool results and Groq credentials remain server-side. Clearing removes the browser's history. API documentation is at `/docs` locally.
 
+The agent is limited to travel and trip planning. Clearly unrelated questions receive a short travel-only redirect without a Groq call; travel requests and brief follow-ups about an earlier trip continue through the planner.
+
 ## Deploy on Vercel
 
 1. Push this repository to GitHub. Import it into Vercel with **Root Directory** set to the repository root (leave it blank or `.`), and set the project **Framework Preset** to **Services** in Build and Deployment settings. The top-level `vercel.json` defines two services: `app` (FastAPI, root `.`) and `frontend` (Vite, root `frontend`).

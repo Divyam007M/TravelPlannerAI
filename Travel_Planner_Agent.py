@@ -1,12 +1,52 @@
 """Server-side LangGraph planner with curated, non-live India travel tools."""
 import os
+import re
 from typing import TypedDict, Annotated, List
 import operator
 from langgraph.graph import StateGraph, START, END
-from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import tool
 
-SYSTEM_INSTRUCTION = """You are WanderAI, a practical India travel planner. Give concise, structured plans with day-by-day suggestions and INR budget estimates when useful. Use tools for supported destination notes, budgets and packing. Ask for essential missing details (destination, days, group size or budget); otherwise state assumptions. Built-in facts and budget figures are static estimates, not live prices, weather, hours or availability. Never claim to make bookings or verify reservations. Avoid inventing live facts."""
+SCOPE_REPLY = "I can help with trips and travel only. Ask me about destinations, itineraries, transport, stays, packing, or travel budgets."
+SYSTEM_INSTRUCTION = """You are WanderAI, a practical India travel planner. Answer only questions related to trips and travel. If a request, or part of it, is unrelated to travel (such as math, coding or general trivia), do not answer that part; instead briefly invite a travel question. Treat short follow-ups as travel-related only when they refer to an earlier trip discussion. Give concise, structured plans with day-by-day suggestions and INR budget estimates when useful. Use tools for supported destination notes, budgets and packing. Ask for essential missing details (destination, days, group size or budget); otherwise state assumptions. Built-in facts and budget figures are static estimates, not live prices, weather, hours or availability. Never claim to make bookings or verify reservations. Avoid inventing live facts."""
+
+TRAVEL_CUE = re.compile(
+    r"\b(?:trip|travel|travelling|traveling|tour|tourism|itinerary|holiday|vacation|destination|"
+    r"visit|visiting|plan|weekend|explore|sightseeing|attraction|flight|airport|train|bus|"
+    r"hotel|hostel|stay|accommodation|restaurant|food|packing|pack|luggage|passport|visa|"
+    r"beach|mountain|trek|hike|budget|inr|rupees|weather|season|booking|journey|"
+    r"goa|jaipur|kerala|manali|bhopal|"
+    r"delhi|mumbai|agra|varanasi|udaipur|rishikesh|shimla|darjeeling|amritsar|"
+    r"hyderabad|chennai|bangalore|kolkata|pune|jaisalmer|leh)\b|"
+    r"\bwhere (?:should|can|could) (?:i|we) go\b",
+    re.IGNORECASE,
+)
+FOLLOW_UP_CUE = re.compile(
+    r"\b(?:it|there|that|those|them|this|next|again|more|less|cheaper|shorter|longer)\b|"
+    r"\bday\s+\d+\b|^(?:why|when|where|how|and then|then what)\??$|"
+    r"^(?:what|how) about\b",
+    re.IGNORECASE,
+)
+UNRELATED_CUE = re.compile(
+    r"\b(?:lcm|hcf|gcd|least common multiple|greatest common divisor|photosynthesis|"
+    r"quadratic equation|write (?:me )?(?:a )?poem|tell (?:me )?(?:a )?joke|"
+    r"write (?:me )?(?:a )?(?:python|javascript|java) (?:program|script|code))\b|"
+    r"\b\d+\s*[+*/]\s*\d+\b",
+    re.IGNORECASE,
+)
+
+
+def is_travel_request(message: str, prior_messages: list) -> bool:
+    """Apply a cheap, conservative topic gate before any provider call."""
+    if TRAVEL_CUE.search(message):
+        return True
+    if UNRELATED_CUE.search(message):
+        return False
+    has_trip_context = any(
+        isinstance(item, HumanMessage) and TRAVEL_CUE.search(str(item.content))
+        for item in prior_messages
+    )
+    return bool(has_trip_context and FOLLOW_UP_CUE.search(message))
 
 
 # ── Tools ─────────────────────────────────────────────────────────
@@ -112,6 +152,18 @@ def build_graph(llm):
         response = bound.invoke([SystemMessage(content=SYSTEM_INSTRUCTION), *state["messages"]])
         return {"messages": [response]}
 
+    def route_request(state: TravelState) -> str:
+        messages = state["messages"]
+        latest_index = next((index for index in range(len(messages) - 1, -1, -1)
+                             if isinstance(messages[index], HumanMessage)), None)
+        if latest_index is None:
+            return "off_topic"
+        return ("agent" if is_travel_request(str(messages[latest_index].content), messages[:latest_index])
+                else "off_topic")
+
+    def off_topic(_state: TravelState) -> dict:
+        return {"messages": [AIMessage(content=SCOPE_REPLY)]}
+
     def run_tools(state: TravelState) -> dict:
         results = []
         for tc in state["messages"][-1].tool_calls:
@@ -125,8 +177,10 @@ def build_graph(llm):
 
     tg = StateGraph(TravelState)
     tg.add_node("agent", travel_agent)
+    tg.add_node("off_topic", off_topic)
     tg.add_node("tools", run_tools)
-    tg.add_edge(START, "agent")
+    tg.add_conditional_edges(START, route_request, {"agent": "agent", "off_topic": "off_topic"})
+    tg.add_edge("off_topic", END)
     tg.add_conditional_edges("agent", lambda s: "tools" if getattr(s["messages"][-1], "tool_calls", []) else "end", {"tools": "tools", "end": END})
     tg.add_edge("tools", "agent")
     return tg.compile()

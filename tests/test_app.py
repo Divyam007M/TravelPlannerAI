@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from backend import main
-from Travel_Planner_Agent import build_graph, estimate_budget, get_city_info, get_packing_list
+from Travel_Planner_Agent import SCOPE_REPLY, build_graph, estimate_budget, get_city_info, get_packing_list
 
 
 class FakeLLM:
@@ -52,8 +52,34 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(len(main._sessions[b["session_id"]]), 2)
         self.assertEqual(len(self.fake.calls[-1]), 4)  # system + prior user/assistant + new user
         self.assertTrue(self.client.post("/api/clear", json={"session_id": a["session_id"]}).json()["cleared"])
-        fresh = self.client.post("/api/chat", json={"message": "Again", "session_id": a["session_id"]}).json()
-        self.assertEqual(fresh["reply"], "Reply 1: Again")
+        fresh = self.client.post("/api/chat", json={"message": "Goa again", "session_id": a["session_id"]}).json()
+        self.assertEqual(fresh["reply"], "Reply 1: Goa again")
+
+    def test_unrelated_questions_are_declined_without_calling_the_model(self):
+        first = self.client.post("/api/chat", json={"message": "What is LCM?"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["reply"], SCOPE_REPLY)
+        self.assertEqual(self.fake.calls, [])
+
+        travel = self.client.post("/api/chat", json={"message": "Plan a trip to Goa", "session_id": first.json()["session_id"]})
+        self.assertEqual(travel.status_code, 200)
+        self.assertEqual(len(self.fake.calls), 1)
+
+        unrelated_follow_up = self.client.post("/api/chat", json={"message": "Explain photosynthesis", "session_id": first.json()["session_id"]})
+        self.assertEqual(unrelated_follow_up.json()["reply"], SCOPE_REPLY)
+        self.assertEqual(len(self.fake.calls), 1)
+
+        code_request = self.client.post("/api/chat", json={"message": "Write me a Python program", "session_id": first.json()["session_id"]})
+        self.assertEqual(code_request.json()["reply"], SCOPE_REPLY)
+        self.assertEqual(len(self.fake.calls), 1)
+
+        relevant_follow_up = self.client.post("/api/chat", json={"message": "What next?", "session_id": first.json()["session_id"]})
+        self.assertEqual(relevant_follow_up.status_code, 200)
+        self.assertEqual(len(self.fake.calls), 2)
+
+        broader_trip = self.client.post("/api/chat", json={"message": "Plan a weekend in Paris"})
+        self.assertEqual(broader_trip.status_code, 200)
+        self.assertEqual(len(self.fake.calls), 3)
 
     def test_error_does_not_commit_history(self):
         class Failing:
@@ -74,7 +100,7 @@ class WanderTests(unittest.TestCase):
     def test_same_session_serializes(self):
         session = "550e8400-e29b-41d4-a716-446655440000"
         def send(i):
-            return self.client.post("/api/chat", json={"message": str(i), "session_id": session})
+            return self.client.post("/api/chat", json={"message": f"Plan a trip to Goa for {i + 2} days", "session_id": session})
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(send, range(2)))
         self.assertTrue(all(r.status_code == 200 for r in results))
@@ -118,8 +144,20 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(follow.json()["reply"], "Reply 2: And then?")
         self.assertFalse(main._sessions)
         self.assertTrue(self.client.post("/api/clear", json={"session_id": first["session_id"]}).json()["cleared"])
-        fresh = self.client.post("/api/chat", json={"message": "Again", "session_id": first["session_id"], "history": []}).json()
-        self.assertEqual(fresh["reply"], "Reply 1: Again")
+        fresh = self.client.post("/api/chat", json={"message": "Goa again", "session_id": first["session_id"], "history": []}).json()
+        self.assertEqual(fresh["reply"], "Reply 1: Goa again")
+
+    def test_stateless_scope_preserves_trip_follow_ups(self):
+        main.app.state.stateless = True
+        first = self.client.post("/api/chat", json={"message": "Plan a Jaipur trip"}).json()
+        history = [{"role": "user", "content": "Plan a Jaipur trip"}, {"role": "assistant", "content": first["reply"]}]
+        unrelated = self.client.post("/api/chat", json={"message": "What is LCM?", "history": history})
+        self.assertEqual(unrelated.json()["reply"], SCOPE_REPLY)
+        self.assertEqual(len(self.fake.calls), 1)
+        history.extend([{"role": "user", "content": "What is LCM?"}, {"role": "assistant", "content": SCOPE_REPLY}])
+        follow = self.client.post("/api/chat", json={"message": "What next?", "history": history})
+        self.assertEqual(follow.status_code, 200)
+        self.assertEqual(len(self.fake.calls), 2)
 
     def test_stateless_history_validation(self):
         main.app.state.stateless = True
