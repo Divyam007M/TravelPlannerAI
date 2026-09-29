@@ -2,6 +2,8 @@ import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
+import httpx
+from groq import RateLimitError
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -90,6 +92,16 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(result.status_code, 502)
         self.assertNotIn("secret", result.text)
         self.assertFalse(main._sessions)
+
+    def test_provider_rate_limit_is_clear_and_retryable(self):
+        class Limited:
+            def invoke(self, *_args, **_kwargs):
+                response = httpx.Response(429, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
+                raise RateLimitError("limited", response=response, body={})
+        main._graph = Limited()
+        result = self.client.post("/api/chat", json={"message": "Plan a trip to Lisbon"})
+        self.assertEqual(result.status_code, 429)
+        self.assertIn("retry", result.json()["detail"].lower())
 
     def test_missing_key(self):
         main._graph = None

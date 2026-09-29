@@ -14,6 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from langchain_core.messages import AIMessage, HumanMessage
+from groq import APITimeoutError, RateLimitError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -112,6 +113,10 @@ async def chat(body: ChatRequest):
             reply = await run_in_threadpool(_chat_stateless, message, body.history)
         else:
             reply = await run_in_threadpool(_chat, message, session_id)
+    except RateLimitError:
+        raise HTTPException(429, "The planner is temporarily rate-limited. Please retry in a moment.") from None
+    except APITimeoutError:
+        raise HTTPException(504, "The planner timed out. Please retry in a moment.") from None
     except Exception:
         raise HTTPException(502, "The planner could not respond. Please retry in a moment.") from None
     return ChatResponse(session_id=session_id, reply=reply)

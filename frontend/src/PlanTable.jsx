@@ -15,7 +15,10 @@ export default function PlanTable({ children }) {
   const body = elements(children, 'tbody')[0]
   const headers = head ? elements(elements(head.props.children, 'tr')[0]?.props.children, 'th').map(cell => textContent(cell.props.children).trim()) : []
   const rows = body ? elements(body.props.children, 'tr').map(row => elements(row.props.children, 'td').map(cell => cell.props.children)) : []
-  const isItinerary = headers.length > 1 && /^day(?:\s|$)/i.test(headers[0]) && rows.length > 0
+  const isItinerary = headers.length > 1 && rows.length > 0 && (
+    /^day(?:\s|$)/i.test(headers[0]) ||
+    (/^(?:time|period|date)(?:\s|$)/i.test(headers[0]) && headers.slice(1).some(header => /activit|place|sight|transport|cost|plan/i.test(header)))
+  )
 
   if (!isItinerary) return <div className="table-scroll" role="region" aria-label="Travel details table" tabIndex="0"><table>{children}</table></div>
 

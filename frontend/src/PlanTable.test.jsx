@@ -34,4 +34,11 @@ describe('plan table display', () => {
     expect(html).toContain('class="table-scroll"')
     expect(html).toContain('<table>')
   })
+
+  it('renders time and activity follow-up tables as readable sections', () => {
+    const html = render('| Time | Activity |\n| --- | --- |\n| 08:00 | Slow breakfast and a long riverside walk |\n| 13:00 | Lunch near the old town |')
+    expect(html.match(/class="itinerary-day"/g)).toHaveLength(2)
+    expect(html).toContain('Slow breakfast and a long riverside walk')
+    expect(html).not.toContain('<table')
+  })
 })
