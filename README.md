@@ -25,9 +25,9 @@ Messages must be 1–4000 characters after trimming. Local sessions are held in 
 
 ## Deploy on Vercel
 
-1. Push this repository to GitHub. Import it into Vercel with **Root Directory** set to the repository root (leave it blank or `.`), not `frontend/` or `backend/`.
+1. Push this repository to GitHub. Import it into Vercel with **Root Directory** set to the repository root (leave it blank or `.`), and set the project **Framework Preset** to **Services** in Build and Deployment settings. The top-level `vercel.json` defines two services: `app` (FastAPI, root `.`) and `frontend` (Vite, root `frontend`).
 2. In the Vercel project settings, add `GROQ_API_KEY` as a server environment variable for **Production** and **Preview**. Set `GROQ_MODEL` only if you need a different accessible tool-calling model; the default is `openai/gpt-oss-120b`. Do not create a `VITE_GROQ_API_KEY` variable or commit `backend/.env`.
-3. Deploy. Vercel installs packages using the repository root `package-lock.json`; `vercel.json` runs `npm run build` to create `frontend/dist` and configures `api/index.py` as the Python function. Vercel installs the root `requirements.txt` for that function. Check `/api/health`, then send a chat message and a follow-up from the deployed page. If the project was previously imported with `frontend` as its Root Directory, change it to the repository root in **Settings → Build and Deployment → Root Directory** and redeploy.
+3. Deploy a new commit. Vercel installs the Vite service from `frontend/package-lock.json`, builds it into `frontend/dist`, and loads the FastAPI service from `api.index:app` using the root `requirements.txt`. Public `/api/*` requests go to `app`; all other paths go to `frontend`. Both services are public. There are no service bindings because the Vite output is static and its browser requests use the public same-origin `/api` route; no server-side service calls exist. Check `/api/health`, then send a chat message and a follow-up from the deployed page. If the project was previously imported with `frontend` as its Root Directory, change it to the repository root in **Settings → Build and Deployment → Root Directory**. For local service-mode testing, run `vercel dev -L` from the repository root; `python start.py` and `python start.py --dev` remain available for local development.
 
 The project has no external session database. Vercel follow-ups rely on the browser's session history (up to ten exchanges), so history is local to that browser tab and is cleared when a new conversation starts. If you later need account-wide or long-term history, add a persistent store. Deployment itself is not performed by this repository's local checks.
 
@@ -35,7 +35,7 @@ The project has no external session database. Vercel follow-ups rely on the brow
 
 `python -m unittest discover -s tests -v`
 
-`npm ci && npm run lint && npm run build`
+`npm ci --prefix frontend && npm run lint --prefix frontend && npm run build --prefix frontend`
 
 The tests use a fake tool-capable LLM and make no paid Groq calls.
 The same tests, lint check and frontend build run in GitHub Actions on each push and pull request without a Groq key.

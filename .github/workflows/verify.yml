@@ -17,14 +17,14 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: frontend/package-lock.json
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
       - name: Test API and agent
         run: python -m unittest discover -s tests -v
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --prefix frontend
       - name: Lint frontend
-        run: npm run lint
+        run: npm run lint --prefix frontend
       - name: Build frontend
-        run: npm run build
+        run: npm run build --prefix frontend
