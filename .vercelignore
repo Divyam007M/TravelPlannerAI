@@ -1,0 +1,11 @@
+# Keep local credentials and generated files out of CLI uploads.
+**/.env
+**/.env.*
+**/node_modules/
+**/.venv/
+**/__pycache__/
+frontend/dist/
+.vercel/
+tests/
+Agent_app.py
+start.py
