@@ -1,0 +1,14 @@
+{
+  "name": "wanderai-repository",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": ["frontend"],
+  "scripts": {
+    "build": "npm run build --workspace wanderai",
+    "lint": "npm run lint --workspace wanderai",
+    "dev": "npm run dev --workspace wanderai"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

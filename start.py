@@ -117,11 +117,11 @@ def check_setup():
         raise SystemExit("Frontend source missing: expected frontend/package.json")
     if not shutil.which(NPM):
         raise SystemExit("npm is missing. Install Node.js 20.19+ or 22.12+ and retry.")
-    if not (FRONTEND / "node_modules").is_dir():
+    if not (ROOT / "node_modules").is_dir():
         log("setup", YL, "Installing frontend dependencies...")
-        result = subprocess.run([NPM, "install"], cwd=str(FRONTEND))
+        result = subprocess.run([NPM, "ci"], cwd=str(ROOT))
         if result.returncode:
-            raise SystemExit("npm install failed. Run it in frontend/ to see the error.")
+            raise SystemExit("npm ci failed. Run it from the repository root to see the error.")
 
 
 def wait_for_http(url, process, seconds=20):
@@ -181,7 +181,7 @@ def build_frontend(force: bool = False):
     log("build", YL, "Building React frontend...")
     result = subprocess.run(
         [NPM, "run", "build"],
-        cwd=str(FRONTEND),
+        cwd=str(ROOT),
         capture_output=False,
     )
     if result.returncode != 0:
@@ -341,7 +341,7 @@ def run_dev(args):
     log("frontend", YL, "Starting Vite on http://localhost:5173 (--host enabled) ...")
     frontend = subprocess.Popen(
         [NPM, "run", "dev"],
-        cwd=str(FRONTEND),
+        cwd=str(ROOT),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     processes.append(frontend)

@@ -5,5 +5,7 @@ __pycache__/
 **/.env*
 !**/.env.example
 frontend/node_modules/
+node_modules/
+.npm-cache/
 frontend/dist/
 .vercel/
