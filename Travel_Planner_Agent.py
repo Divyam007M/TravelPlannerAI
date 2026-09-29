@@ -1,4 +1,5 @@
-"""Server-side LangGraph planner with curated, non-live India travel tools."""
+"""Server-side LangGraph planner with global location and live data tools."""
+import json
 import os
 import re
 from typing import TypedDict, Annotated, List
@@ -6,18 +7,18 @@ import operator
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import tool
+from backend.travel_services import convert_currency, resolve_location, weather_forecast
 
 SCOPE_REPLY = "I can help with trips and travel only. Ask me about destinations, itineraries, transport, stays, packing, or travel budgets."
-SYSTEM_INSTRUCTION = """You are WanderAI, a practical India travel planner. Answer only questions related to trips and travel. If a request, or part of it, is unrelated to travel (such as math, coding or general trivia), do not answer that part; instead briefly invite a travel question. Treat short follow-ups as travel-related only when they refer to an earlier trip discussion. Give concise, structured plans with day-by-day suggestions and INR budget estimates when useful. Use tools for supported destination notes, budgets and packing. Ask for essential missing details (destination, days, group size or budget); otherwise state assumptions. Built-in facts and budget figures are static estimates, not live prices, weather, hours or availability. Never claim to make bookings or verify reservations. Avoid inventing live facts."""
+SYSTEM_INSTRUCTION = """You are WanderAI, a practical worldwide travel planner. Answer only trip and travel questions; decline unrelated parts briefly. Keep conversation context. For named places, call resolve_destination before a place-specific plan. If it returns multiple places, ask which country or region the user means; if unresolved, do not invent coordinates or place facts. Plan for the supplied destination, dates or season, duration, interests, party size, budget and origin. Dates, origin, budget and home currency are optional: never withhold an itinerary to ask for them; state assumptions and plan now. Ask a question only when the destination or another truly essential detail is missing. Give readable day-by-day sections with short bullets rather than wide Markdown tables. Use destination local time, usual currency and appropriate units. Use get_destination_weather for actual weather and convert_trip_currency for exchange rates; report exact provider source, observation date and retrieval time from tool output. Copy tool values and weather condition descriptions faithfully; do not reinterpret numeric weather codes. Never invent a forecast, rate or tool result. Dates beyond a forecast horizon may receive clearly labeled general seasonal guidance, never a daily forecast. Numerical trip costs are illustrative estimates only when grounded in user-supplied amounts or a cited current source; distinguish local costs from converted amounts and use a single rate for any conversion. Prices, visas, opening hours, transport schedules and availability are not verified here. Do not promise bookings or live prices. Packing suggestions are general."""
 
 TRAVEL_CUE = re.compile(
     r"\b(?:trip|travel|travelling|traveling|tour|tourism|itinerary|holiday|vacation|destination|"
     r"visit|visiting|plan|weekend|explore|sightseeing|attraction|flight|airport|train|bus|"
     r"hotel|hostel|stay|accommodation|restaurant|food|packing|pack|luggage|passport|visa|"
-    r"beach|mountain|trek|hike|budget|inr|rupees|weather|season|booking|journey|"
-    r"goa|jaipur|kerala|manali|bhopal|"
-    r"delhi|mumbai|agra|varanasi|udaipur|rishikesh|shimla|darjeeling|amritsar|"
-    r"hyderabad|chennai|bangalore|kolkata|pune|jaisalmer|leh)\b|"
+    r"beach|mountain|trek|hike|budget|currency|exchange|convert|weather|forecast|season|booking|journey|"
+    r"route|ferry|cruise|museum|landmark|local time|time zone|timezone)\b|"
+    r"\b(?:what (?:can|should) (?:i|we) (?:do|see) in|things to do in|tell me about)\b|"
     r"\bwhere (?:should|can|could) (?:i|we) go\b",
     re.IGNORECASE,
 )
@@ -38,82 +39,77 @@ UNRELATED_CUE = re.compile(
 
 def is_travel_request(message: str, prior_messages: list) -> bool:
     """Apply a cheap, conservative topic gate before any provider call."""
-    if TRAVEL_CUE.search(message):
-        return True
     if UNRELATED_CUE.search(message):
         return False
+    if TRAVEL_CUE.search(message):
+        return True
     has_trip_context = any(
         isinstance(item, HumanMessage) and TRAVEL_CUE.search(str(item.content))
         for item in prior_messages
     )
-    return bool(has_trip_context and FOLLOW_UP_CUE.search(message))
+    if has_trip_context and FOLLOW_UP_CUE.search(message):
+        return True
+    # A bare place name can start a travel conversation, wherever it is.
+    if re.fullmatch(r"[\wÀ-ÿ .,'-]{2,80}", message.strip()) and len(message.split()) <= 5:
+        return resolve_location(message)["status"] in {"resolved", "ambiguous"}
+    return False
 
 
 # ── Tools ─────────────────────────────────────────────────────────
 @tool
-def get_city_info(city: str) -> str:
-    """Gets information about an Indian travel destination city."""
-    cities = {
-        "Goa": "Best beaches in India. Famous for: Baga Beach, Old Goa churches, nightlife. Best time: Nov-Feb.",
-        "Jaipur": "Pink City. Famous for: Amber Fort, Hawa Mahal, City Palace. Best time: Oct-Mar.",
-        "Kerala": "God's Own Country. Famous for: Backwaters, Munnar tea gardens, Ayurveda. Best time: Sep-Mar.",
-        "Manali": "Mountain paradise. Famous for: Rohtang Pass, adventure sports, Solang Valley. Best time: Apr-Jun.",
-        "Bhopal": "City of Lakes. Famous for: Upper Lake, Lower Lake, Sanchi Stupa, Bhimbetka caves. Best time: Oct-Mar.",
-        "Delhi": "Capital city of India. Famous for: Red Fort, India Gate, Qutub Minar, street food. Best time: Oct-Mar.",
-        "Mumbai": "Financial capital. Famous for: Gateway of India, Marine Drive, Bollywood, nightlife. Best time: Nov-Feb.",
-        "Agra": "Home of the Taj Mahal. Famous for: Taj Mahal, Agra Fort, Fatehpur Sikri. Best time: Oct-Mar.",
-        "Varanasi": "Spiritual capital of India. Famous for: Ganga ghats, Kashi Vishwanath Temple, Ganga Aarti. Best time: Oct-Mar.",
-        "Udaipur": "City of Lakes. Famous for: Lake Pichola, City Palace, boat rides. Best time: Oct-Mar.",
-        "Rishikesh": "Yoga capital of the world. Famous for: Ganga river, yoga retreats, river rafting. Best time: Sep-Apr.",
-        "Shimla": "Queen of Hills. Famous for: Mall Road, Ridge, toy train. Best time: Mar-Jun.",
-        "Darjeeling": "Tea garden paradise. Famous for: Darjeeling tea, Tiger Hill sunrise, toy train. Best time: Mar-May.",
-        "Amritsar": "Spiritual and cultural hub. Famous for: Golden Temple, Wagah Border, Punjabi food. Best time: Oct-Mar.",
-        "Hyderabad": "City of Pearls. Famous for: Charminar, Golconda Fort, biryani. Best time: Oct-Mar.",
-        "Chennai": "Cultural capital of South India. Famous for: Marina Beach, temples, classical dance. Best time: Nov-Feb.",
-        "Bangalore": "Silicon Valley of India. Famous for: IT hubs, gardens, nightlife. Best time: Oct-Feb.",
-        "Kolkata": "City of Joy. Famous for: Howrah Bridge, Durga Puja, colonial architecture. Best time: Oct-Feb.",
-        "Pune": "Oxford of the East. Famous for: education hubs, forts, pleasant weather. Best time: Oct-Feb.",
-        "Jaisalmer": "Golden City. Famous for: sand dunes, desert safari, Jaisalmer Fort. Best time: Oct-Mar.",
-        "Leh": "High-altitude desert. Famous for: Pangong Lake, monasteries, bike trips. Best time: May-Sep.",
-    }
-    match = next((name for name in cities if name.casefold() == str(city).strip().casefold()), None)
-    if not match:
-        return f"No built-in notes for {city!r}. Supported destinations: {', '.join(cities)}."
-    return f"{match}: {cities[match]} General notes only; check current conditions and opening hours."
+def resolve_destination(destination: str) -> str:
+    """Resolve a worldwide city or region and its timezone/usual currency; ask for clarification if ambiguous."""
+    return json.dumps(resolve_location(destination), ensure_ascii=False)
 
 
 @tool
-def estimate_budget(city: str, days: int, travel_class: str) -> str:
+def estimate_budget(city: str, days: int, travel_class: str, daily_local_amount: float | None = None) -> str:
     """
-    Estimates the travel budget for a city trip.
+    Computes an illustrative local trip total only from a supplied daily amount.
 
     Args:
         city: Name of the destination city.
         days: Number of days for the trip.
         travel_class: Budget tier — one of 'low', 'mid', or 'luxury'.
+        daily_local_amount: User-supplied estimated cost per person per day in local currency.
     """
-    # FIX: keys now match the expected travel_class values ('low', 'mid', 'luxury')
-    base_costs = {
-        "low":    {"hotel": 800,  "food": 400,  "activities": 300},
-        "mid":    {"hotel": 3000, "food": 1000, "activities": 900},
-        "luxury": {"hotel": 8000, "food": 4000, "activities": 2000},
-    }
     if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 60:
         return "Invalid day count. Provide a whole number from 1 to 60."
     if not str(city).strip():
         return "A destination is required for the estimate."
     normalized = str(travel_class).lower().replace("-range", "").strip()
-    if normalized not in base_costs:
+    if normalized not in {"low", "mid", "luxury"}:
         return "Unsupported budget tier. Choose low, mid or luxury."
-    costs = base_costs[normalized]
-    daily = sum(costs.values())
-    total = daily * days
-    return (
-        f"Static estimate per person for {days} days in {city.strip()} ({normalized} tier): "
-        f"Hotel ₹{costs['hotel']}/day + Food ₹{costs['food']}/day + "
-        f"Activities ₹{costs['activities']}/day = ₹{daily}/day. "
-        f"Total: ₹{total:,}. Excludes transport to the destination, taxes and seasonal changes; verify actual prices."
-    )
+    place = resolve_location(city)
+    if place["status"] != "resolved":
+        return json.dumps(place, ensure_ascii=False)
+    currency = place["location"]["usual_currency"]
+    if not currency:
+        return "The destination's usual currency could not be determined; ask for a currency before computing a total."
+    if daily_local_amount is None:
+        return f"No verified local cost data for {place['location']['label']}. Ask for a daily amount in {currency}; do not apply fixed prices from another country."
+    try:
+        from decimal import Decimal
+        daily = Decimal(str(daily_local_amount))
+        if not daily.is_finite() or daily < 0 or daily > Decimal("1000000000"):
+            raise ValueError
+    except (ValueError, TypeError, ArithmeticError):
+        return "Invalid daily amount. Provide a nonnegative amount in the destination's usual currency."
+    return (f"Illustrative {normalized} budget using the supplied estimate: {daily} {currency} per person per day × "
+            f"{days} days = {daily * days} {currency} per person. Local estimate, not a price quote; "
+            "excludes origin transport, taxes and changes. Convert separately with one verified rate if requested.")
+
+
+@tool
+def get_destination_weather(destination: str, start_date: str | None = None, days: int = 3) -> str:
+    """Get genuine current conditions and dated forecast for a resolved place (ISO start_date, 1–60 days)."""
+    return json.dumps(weather_forecast(destination, start_date, days), ensure_ascii=False)
+
+
+@tool
+def convert_trip_currency(amount: float, base: str, target: str) -> str:
+    """Convert a nonnegative amount between ISO currencies with a dated Frankfurter rate."""
+    return json.dumps(convert_currency(amount, base, target), ensure_ascii=False)
 
 
 @tool
@@ -136,7 +132,7 @@ def get_packing_list(destination_type: str) -> str:
 
 
 # ── Graph setup ───────────────────────────────────────────────────
-tools = [get_city_info, estimate_budget, get_packing_list]
+tools = [resolve_destination, estimate_budget, get_packing_list, get_destination_weather, convert_trip_currency]
 tool_map = {t.name: t for t in tools}
 
 

@@ -4,3 +4,19 @@
 @media(max-width:700px){.sidebar{position:fixed;inset:0 auto 0 0;z-index:20;width:min(310px,86vw);transform:translateX(-100%);transition:transform .2s;min-height:100dvh}.sidebar.open{transform:translateX(0)}.mobile-close,.menu-button{display:block}.scrim{display:block;position:fixed;inset:0;z-index:19;border:0;background:#10271c99}.topbar{height:66px;padding:0 20px;justify-content:flex-start;gap:18px}.topbar-note{margin-left:auto}.welcome{padding:54px 24px 28px}.welcome h1{font-size:clamp(58px,13vw,80px);letter-spacing:-3px}.welcome-copy{font-size:14px}.prompts-heading{margin-top:36px}.prompts{grid-template-columns:1fr}.prompts button{min-height:53px}.composer-area{padding:12px 15px 15px}.composer-hint{font-size:9px}.messages{padding:30px 23px 35px}}
 @media(max-width:440px){.topbar-note{display:none}.welcome{padding-top:43px}.welcome h1{font-size:60px}.welcome-note{line-height:1.5}.composer textarea{font-size:14px}.error{align-items:flex-start}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* Travel plans can have many columns. Show day rows as readable sections at every width. */
+.markdown{min-width:0;overflow-wrap:break-word}
+.markdown pre{max-width:100%;overflow-x:auto;padding:12px;background:#eeeae0;border-radius:4px}
+.markdown :not(pre)>code{overflow-wrap:anywhere}
+.markdown .table-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}
+.markdown .table-scroll table{display:table;max-width:none;min-width:560px;width:max-content;overflow:visible}
+.markdown .table-scroll th,.markdown .table-scroll td{min-width:110px;max-width:340px;overflow-wrap:break-word;vertical-align:top}
+.itinerary-days{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px;margin:16px 0 22px}
+.itinerary-day{min-width:0;background:#fbfaf6;border:1px solid #ded9ce;border-radius:5px;padding:18px 19px}
+.itinerary-day h4{font-family:'Playfair Display',Georgia,serif;font-size:18px;font-weight:600;line-height:1.35;color:#1d3e31;margin:0 0 12px;overflow-wrap:break-word}
+.itinerary-day dl{margin:0}.itinerary-field{border-top:1px solid #e8e3d9;padding:10px 0 0;margin-top:10px;min-width:0}
+.itinerary-field dt{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#826e56;overflow-wrap:break-word}
+.itinerary-field dd{margin:4px 0 0;line-height:1.55;overflow-wrap:break-word}
+.message.assistant,.messages,.conversation{min-width:0}
+.sidebar-foot a{color:#e4d0ad;text-underline-offset:2px}

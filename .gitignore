@@ -9,3 +9,5 @@ node_modules/
 .npm-cache/
 frontend/dist/
 .vercel/
+frontend/test-results/
+frontend/playwright-report/

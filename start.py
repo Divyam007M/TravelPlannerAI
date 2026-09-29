@@ -110,7 +110,7 @@ def check_env():
 
 def check_setup():
     try:
-        import fastapi, langchain_groq, langgraph, uvicorn, dotenv  # noqa: F401
+        import fastapi, langchain_groq, langgraph, uvicorn, dotenv, babel, httpx  # noqa: F401
     except ImportError as exc:
         raise SystemExit(f"Missing Python dependency: {exc}. Run: python -m pip install -r requirements.txt") from None
     if not FRONTEND.is_dir() or not (FRONTEND / "package.json").exists():
@@ -138,6 +138,15 @@ def wait_for_http(url, process, seconds=20):
             pass
         time.sleep(0.3)
     raise RuntimeError(f"Timed out waiting for {url}. Check server output and port availability.")
+
+
+def check_port_free(port: int):
+    """Fail before startup rather than accepting another process's health reply."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            raise SystemExit(f"Port {port} is already in use. Stop the process using it, then retry.") from None
 
 
 def get_local_ip() -> str:
@@ -254,6 +263,7 @@ def run_combined(args):
     print_banner("Combined (single server on :8000)")
     check_setup()
     check_env()
+    check_port_free(8000)
 
     if not build_frontend(force=args.rebuild):
         sys.exit(1)
@@ -314,6 +324,8 @@ def run_dev(args):
     print_banner("Dev (Vite :5173  |  FastAPI :8000)")
     check_setup()
     check_env()
+    check_port_free(8000)
+    check_port_free(5173)
 
     log("backend", CY, "Starting FastAPI on http://localhost:8000 ...")
     backend = subprocess.Popen(

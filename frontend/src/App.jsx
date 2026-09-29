@@ -2,14 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowRight, Compass, MapPin, Menu, Plus, Send, X } from 'lucide-react'
+import PlanTable from './PlanTable'
 
 const prompts = [
-  { label: 'A slower week in Kerala', text: 'Plan a relaxed 7-day trip to Kerala for two people on a mid-range budget. Include an estimated INR budget.' },
-  { label: 'A long weekend in Jaipur', text: 'Plan a 3-day Jaipur trip focused on heritage and local food, with a low-budget estimate.' },
-  { label: 'What to pack for Manali', text: 'What should I pack for a mountain trip to Manali, and what should I keep in mind?' },
-  { label: 'Goa on a budget', text: 'Help me plan 5 days in Goa on a low budget, with a per-person INR estimate.' }
+  { label: 'Five days in Bhopal', text: 'Plan a 5-day Bhopal, India trip with heritage sights and a relaxed pace.' },
+  { label: 'A week in Lisbon', text: 'Plan 7 days in Lisbon, Portugal for two people who enjoy food and architecture.' },
+  { label: 'Weather for Tokyo', text: 'What is the current weather and next three days of forecast in Tokyo, Japan?' },
+  { label: 'Convert INR to EUR', text: 'Convert 10,000 INR to EUR using the latest available exchange rate.' }
 ]
-const places = 'Goa, Jaipur, Kerala, Manali, Bhopal, Delhi, Mumbai, Agra, Varanasi, Udaipur, Rishikesh, Shimla, Darjeeling, Amritsar, Hyderabad, Chennai, Bangalore, Kolkata, Pune, Jaisalmer and Leh.'
 const initial = () => {
   try { return JSON.parse(sessionStorage.getItem('wanderai-chat')) || { sessionId: null, messages: [] } }
   catch { return { sessionId: null, messages: [] } }
@@ -99,18 +99,17 @@ export default function App() {
           <p className="eyebrow">YOUR TRAVEL COMPANION</p>
           <p className="side-intro">The best journeys start with a little curiosity.</p>
           <div className="side-rule" />
-          <p className="side-heading"><MapPin size={15} /> Built for India</p>
-          <p className="side-copy">Explore 21 destinations with curated highlights, packing ideas and estimated INR budgets.</p>
-          <details className="places"><summary>See supported destinations</summary><p>{places}</p></details>
+          <p className="side-heading"><MapPin size={15} /> Explore worldwide</p>
+          <p className="side-copy">Plan cities and regions around the world. Add a country when a place name could mean more than one destination.</p>
         </div>
-        <div className="sidebar-foot"><span className="foot-dot" /> Planning notes and budgets are estimates. Check current prices, weather and availability before you go.</div>
+        <div className="sidebar-foot"><span className="foot-dot" /> Weather forecasts cover up to 16 days. Location and weather: <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a>. Rates: <a href="https://frankfurter.dev/" target="_blank" rel="noopener noreferrer">Frankfurter</a>. Planning costs are estimates; verify prices and availability.</div>
       </aside>
 
       {menuOpen && <button className="scrim" aria-label="Close menu" onClick={() => setMenuOpen(false)} />}
       <main className="main">
         <header className="topbar">
           <button className="menu-button icon-button" onClick={() => setMenuOpen(true)} aria-label="Open menu"><Menu size={22} /></button>
-          <span className="topbar-title">TRIP PLANNER <span className="topbar-line" /> INDIA</span>
+          <span className="topbar-title">TRIP PLANNER <span className="topbar-line" /> WORLDWIDE</span>
           <span className="topbar-note">Thoughtful travel, made simple</span>
         </header>
 
@@ -124,7 +123,7 @@ export default function App() {
               <div className="prompts">
                 {prompts.map(prompt => <button key={prompt.label} onClick={() => submit(prompt.text)} disabled={pending || clearing}><span>{prompt.label}</span><ArrowRight size={17} /></button>)}
               </div>
-              <p className="welcome-note">Itineraries, packing ideas and INR cost estimates for destinations across India.</p>
+              <p className="welcome-note">Worldwide itineraries, dated weather forecasts and currency conversions. Prices and availability need separate verification.</p>
             </section>
           ) : (
             <div className="messages">
@@ -132,7 +131,7 @@ export default function App() {
               {messages.map((message, index) => <article className={'message ' + message.role} key={index}>
                 <span className="message-label">{message.role === 'user' ? 'YOU' : 'WANDERAI'}</span>
                 {message.role === 'assistant'
-                  ? <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>{message.content}</ReactMarkdown></div>
+                  ? <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ table: PlanTable }} skipHtml>{message.content}</ReactMarkdown></div>
                   : <p>{message.content}</p>}
               </article>)}
               {pending && <div className="thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span> Shaping your trip…</div>}

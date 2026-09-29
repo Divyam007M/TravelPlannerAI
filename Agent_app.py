@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 st.title("🏖️ AI Travel Planner")
-st.caption("Plan India travel with LangGraph + Groq. Notes and prices are estimates.")
+st.caption("Plan travel worldwide with LangGraph + Groq. Costs are estimates; forecasts and exchange rates include provider dates.")
 
 # ── Session State ─────────────────────────────────────────────────
 # chat_history stores dicts for display: {"role": "user"|"assistant", "content": "..."}
@@ -36,7 +36,7 @@ for msg in st.session_state.chat_history:
         st.markdown(msg["content"])
 
 # ── User Input ────────────────────────────────────────────────────
-user_input = st.chat_input("E.g. Plan a 5-day trip to Goa for 2 people on a mid budget...")
+user_input = st.chat_input("E.g. Plan a 5-day trip to Lisbon for two people...")
 
 if user_input:
     # 1. Show the user's message immediately
@@ -76,14 +76,12 @@ with st.sidebar:
     st.markdown(
         """
         Ask me anything about trip planning, for example:
-        - *"Plan a 5-day low-budget trip to Manali"*
-        - *"What should I pack for Goa?"*
-        - *"Estimate cost for 3 days in Jaipur (luxury)"*
-        - *"Tell me about Kerala"*
+        - *"Plan a 5-day trip to Lisbon, Portugal"*
+        - *"What is the forecast for Tokyo next week?"*
+        - *"Convert 10,000 INR to EUR"*
+        - *"What should I pack for Bhopal, India?"*
 
-        **Supported cities:** Goa, Jaipur, Kerala, Manali, Delhi, Mumbai,
-        Agra, Varanasi, Udaipur, Rishikesh, Shimla, Darjeeling, Amritsar,
-        Hyderabad, Chennai, Bangalore, Kolkata, Pune, Jaisalmer, Leh, Bhopal
+        Specify a country or region if the destination name is shared by multiple places.
         """
     )
     st.divider()

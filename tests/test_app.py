@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from backend import main
-from Travel_Planner_Agent import SCOPE_REPLY, build_graph, estimate_budget, get_city_info, get_packing_list
+from Travel_Planner_Agent import SCOPE_REPLY, build_graph, estimate_budget, get_packing_list
 
 
 class FakeLLM:
@@ -43,8 +43,8 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/clear", json={"session_id": "bad"}).status_code, 422)
 
     def test_context_isolation_and_clear(self):
-        a = self.client.post("/api/chat", json={"message": "Goa"}).json()
-        b = self.client.post("/api/chat", json={"message": "Jaipur"}).json()
+        a = self.client.post("/api/chat", json={"message": "Plan a Goa trip"}).json()
+        b = self.client.post("/api/chat", json={"message": "Plan a Jaipur trip"}).json()
         follow = self.client.post("/api/chat", json={"message": "What next?", "session_id": a["session_id"]}).json()
         self.assertEqual(follow["reply"], "Reply 2: What next?")
         self.assertNotEqual(a["session_id"], b["session_id"])
@@ -52,8 +52,8 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(len(main._sessions[b["session_id"]]), 2)
         self.assertEqual(len(self.fake.calls[-1]), 4)  # system + prior user/assistant + new user
         self.assertTrue(self.client.post("/api/clear", json={"session_id": a["session_id"]}).json()["cleared"])
-        fresh = self.client.post("/api/chat", json={"message": "Goa again", "session_id": a["session_id"]}).json()
-        self.assertEqual(fresh["reply"], "Reply 1: Goa again")
+        fresh = self.client.post("/api/chat", json={"message": "Plan Goa again", "session_id": a["session_id"]}).json()
+        self.assertEqual(fresh["reply"], "Reply 1: Plan Goa again")
 
     def test_unrelated_questions_are_declined_without_calling_the_model(self):
         first = self.client.post("/api/chat", json={"message": "What is LCM?"})
@@ -86,7 +86,7 @@ class WanderTests(unittest.TestCase):
             def invoke(self, *_args, **_kwargs):
                 raise RuntimeError("secret internal traceback")
         main._graph = Failing()
-        result = self.client.post("/api/chat", json={"message": "Goa"})
+        result = self.client.post("/api/chat", json={"message": "Plan a Goa trip"})
         self.assertEqual(result.status_code, 502)
         self.assertNotIn("secret", result.text)
         self.assertFalse(main._sessions)
@@ -94,7 +94,7 @@ class WanderTests(unittest.TestCase):
     def test_missing_key(self):
         main._graph = None
         with patch.dict(os.environ, {"GROQ_API_KEY": ""}):
-            result = self.client.post("/api/chat", json={"message": "Goa"})
+            result = self.client.post("/api/chat", json={"message": "Plan a Goa trip"})
         self.assertEqual(result.status_code, 503)
 
     def test_same_session_serializes(self):
@@ -107,11 +107,13 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(len(main._sessions[session]), 4)
 
     def test_tools(self):
-        self.assertIn("Amber Fort", get_city_info.invoke({"city": " jaipur "}))
-        self.assertIn("No built-in", get_city_info.invoke({"city": "Unknown"}))
-        self.assertIn("₹", estimate_budget.invoke({"city": "Goa", "days": 3, "travel_class": "mid-range"}))
-        self.assertIn("Invalid day", estimate_budget.invoke({"city": "Goa", "days": -1, "travel_class": "mid"}))
-        self.assertIn("Unsupported", estimate_budget.invoke({"city": "Goa", "days": 2, "travel_class": "ultra"}))
+        location = {"status": "resolved", "location": {"label": "Lisbon, Portugal", "usual_currency": "EUR"}}
+        with patch("Travel_Planner_Agent.resolve_location", return_value=location):
+            self.assertIn("EUR", estimate_budget.invoke({"city": "Lisbon", "days": 3, "travel_class": "mid-range", "daily_local_amount": 100}))
+            self.assertIn("300", estimate_budget.invoke({"city": "Lisbon", "days": 3, "travel_class": "mid-range", "daily_local_amount": 100}))
+            self.assertIn("No verified", estimate_budget.invoke({"city": "Lisbon", "days": 3, "travel_class": "mid"}))
+            self.assertIn("Invalid day", estimate_budget.invoke({"city": "Lisbon", "days": -1, "travel_class": "mid"}))
+            self.assertIn("Unsupported", estimate_budget.invoke({"city": "Lisbon", "days": 2, "travel_class": "ultra"}))
         self.assertIn("Sunscreen", get_packing_list.invoke({"destination_type": " BEACH "}))
         self.assertIn("Unsupported", get_packing_list.invoke({"destination_type": "space"}))
 
@@ -135,17 +137,42 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(len(output["messages"]), 4)
         self.assertIn("Invalid tool arguments", output["messages"][-1].content)
 
+    def test_graph_uses_weather_and_currency_tool_results(self):
+        class CallingLLM:
+            def __init__(self, name, args):
+                self.name, self.args = name, args
+
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, messages):
+                result = next((item for item in messages if isinstance(item, ToolMessage)), None)
+                if result:
+                    return AIMessage(content=result.content)
+                return AIMessage(content="", tool_calls=[{
+                    "name": self.name, "args": self.args, "id": "call-1", "type": "tool_call"
+                }])
+
+        with patch("Travel_Planner_Agent.weather_forecast", return_value={"status": "ok", "source": "Open-Meteo", "forecast": []}):
+            result = build_graph(CallingLLM("get_destination_weather", {"destination": "Tokyo, Japan"})).invoke(
+                {"messages": [HumanMessage(content="Weather for Tokyo, Japan?")]})
+            self.assertIn("Open-Meteo", result["messages"][-1].content)
+        with patch("Travel_Planner_Agent.convert_currency", return_value={"status": "ok", "source": "Frankfurter", "as_of": "2026-09-28"}):
+            result = build_graph(CallingLLM("convert_trip_currency", {"amount": 100, "base": "INR", "target": "EUR"})).invoke(
+                {"messages": [HumanMessage(content="Convert 100 INR to EUR for my trip")]})
+            self.assertIn("2026-09-28", result["messages"][-1].content)
+
     def test_stateless_vercel_context_and_clear(self):
         main.app.state.stateless = True
-        first = self.client.post("/api/chat", json={"message": "Goa"}).json()
-        history = [{"role": "user", "content": "Goa"}, {"role": "assistant", "content": first["reply"]}]
+        first = self.client.post("/api/chat", json={"message": "Plan a Goa trip"}).json()
+        history = [{"role": "user", "content": "Plan a Goa trip"}, {"role": "assistant", "content": first["reply"]}]
         follow = self.client.post("/api/chat", json={"message": "And then?", "session_id": first["session_id"], "history": history})
         self.assertEqual(follow.status_code, 200)
         self.assertEqual(follow.json()["reply"], "Reply 2: And then?")
         self.assertFalse(main._sessions)
         self.assertTrue(self.client.post("/api/clear", json={"session_id": first["session_id"]}).json()["cleared"])
-        fresh = self.client.post("/api/chat", json={"message": "Goa again", "session_id": first["session_id"], "history": []}).json()
-        self.assertEqual(fresh["reply"], "Reply 1: Goa again")
+        fresh = self.client.post("/api/chat", json={"message": "Plan Goa again", "session_id": first["session_id"], "history": []}).json()
+        self.assertEqual(fresh["reply"], "Reply 1: Plan Goa again")
 
     def test_stateless_scope_preserves_trip_follow_ups(self):
         main.app.state.stateless = True
@@ -169,7 +196,7 @@ class WanderTests(unittest.TestCase):
         ]
         for history in invalid:
             with self.subTest(history=history):
-                self.assertEqual(self.client.post("/api/chat", json={"message": "Goa", "history": history}).status_code, 422)
+                self.assertEqual(self.client.post("/api/chat", json={"message": "Plan a Goa trip", "history": history}).status_code, 422)
 
     def test_vercel_entrypoint_exposes_stateless_app(self):
         import importlib
