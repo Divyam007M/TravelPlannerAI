@@ -6,10 +6,10 @@ import httpx
 from groq import RateLimitError
 
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from backend import main
-from Travel_Planner_Agent import SCOPE_REPLY, build_graph, estimate_budget, get_packing_list
+from Travel_Planner_Agent import SCOPE_REPLY, RateLimitFallback, build_graph, estimate_budget, get_packing_list
 
 
 class FakeLLM:
@@ -96,12 +96,47 @@ class WanderTests(unittest.TestCase):
     def test_provider_rate_limit_is_clear_and_retryable(self):
         class Limited:
             def invoke(self, *_args, **_kwargs):
-                response = httpx.Response(429, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
+                response = httpx.Response(429, headers={"retry-after": "13"}, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
                 raise RateLimitError("limited", response=response, body={})
         main._graph = Limited()
         result = self.client.post("/api/chat", json={"message": "Plan a trip to Lisbon"})
         self.assertEqual(result.status_code, 429)
         self.assertIn("retry", result.json()["detail"].lower())
+        self.assertEqual(result.headers["retry-after"], "13")
+
+    def test_rate_limited_primary_uses_fallback_with_tool_context(self):
+        class Primary:
+            def __init__(self):
+                self.calls = 0
+
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, _messages):
+                self.calls += 1
+                response = httpx.Response(429, headers={"retry-after": "30"}, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
+                raise RateLimitError("limited", response=response, body={})
+
+        class Fallback:
+            def __init__(self):
+                self.calls = []
+
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, messages):
+                self.calls.append(messages)
+                return AIMessage(content="Fallback trip plan")
+
+        fallback = Fallback()
+        primary = Primary()
+        graph = build_graph(RateLimitFallback(primary, fallback))
+        result = graph.invoke({"messages": [HumanMessage(content="Plan a trip to Lisbon")]})
+        self.assertEqual(result["messages"][-1].content, "Fallback trip plan")
+        self.assertEqual(len(fallback.calls), 1)
+        self.assertIsInstance(fallback.calls[0][0], SystemMessage)
+        graph.invoke({"messages": [HumanMessage(content="Plan a trip to Tokyo")]})
+        self.assertEqual(primary.calls, 1)  # honor the provider's retry window
 
     def test_missing_key(self):
         main._graph = None

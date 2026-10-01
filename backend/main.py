@@ -1,6 +1,7 @@
 """WanderAI API. Sessions are in memory and disappear when the server restarts."""
 from __future__ import annotations
 
+import math
 import os
 import sys
 import threading
@@ -113,8 +114,18 @@ async def chat(body: ChatRequest):
             reply = await run_in_threadpool(_chat_stateless, message, body.history)
         else:
             reply = await run_in_threadpool(_chat, message, session_id)
-    except RateLimitError:
-        raise HTTPException(429, "The planner is temporarily rate-limited. Please retry in a moment.") from None
+    except RateLimitError as exc:
+        raw = exc.response.headers.get("retry-after", "")
+        try:
+            seconds = math.ceil(float(raw))
+            if not 1 <= seconds <= 86400:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            seconds = None
+        detail = (f"Groq has reached a usage limit. Please retry in {seconds} seconds."
+                  if seconds else "Groq has reached a usage limit. Please try again later.")
+        headers = {"Retry-After": str(seconds)} if seconds else None
+        raise HTTPException(429, detail, headers=headers) from None
     except APITimeoutError:
         raise HTTPException(504, "The planner timed out. Please retry in a moment.") from None
     except Exception:

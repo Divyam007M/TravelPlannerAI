@@ -23,17 +23,27 @@ export default function App() {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const [failedText, setFailedText] = useState('')
+  const [retryUntil, setRetryUntil] = useState(0)
+  const [now, setNow] = useState(Date.now())
   const [clearing, setClearing] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const bottom = useRef(null)
   const textarea = useRef(null)
+  const submitting = useRef(false)
+  const retrySeconds = Math.max(0, Math.ceil((retryUntil - now) / 1000))
 
   useEffect(() => { sessionStorage.setItem('wanderai-chat', JSON.stringify({ sessionId, messages })) }, [sessionId, messages])
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [messages, pending, error])
+  useEffect(() => {
+    if (!retryUntil) return undefined
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [retryUntil])
 
   async function submit(text = draft) {
     const value = text.trim()
-    if (!value || pending || clearing) return
+    if (!value || pending || clearing || submitting.current || retrySeconds > 0) return
+    submitting.current = true
     setDraft('')
     setError('')
     setFailedText('')
@@ -45,7 +55,17 @@ export default function App() {
         body: JSON.stringify({ message: value, session_id: sessionId, history: messages.slice(-20) })
       })
       const data = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(data.detail || 'The planner could not respond.')
+      if (!response.ok) {
+        if (response.status === 429) {
+          const wait = Number(response.headers.get('Retry-After'))
+          if (Number.isFinite(wait) && wait > 0) {
+            setNow(Date.now())
+            setRetryUntil(Date.now() + Math.ceil(wait) * 1000)
+          }
+        }
+        throw new Error(typeof data.detail === 'string' ? data.detail : 'The planner could not respond.')
+      }
+      setRetryUntil(0)
       setSessionId(data.session_id)
       setMessages(prev => [...prev, { role: 'assistant', content: data.reply }])
     } catch (err) {
@@ -53,6 +73,7 @@ export default function App() {
       setFailedText(value)
       setError(err.message || 'Connection failed. Please try again.')
     } finally {
+      submitting.current = false
       setPending(false)
       textarea.current?.focus()
     }
@@ -121,7 +142,7 @@ export default function App() {
               <p className="welcome-copy">A thoughtful trip starts with a good question. Tell me where you dream of going, and we’ll shape the details together.</p>
               <div className="prompts-heading"><span>TRY A STARTING POINT</span><span className="prompt-line" /></div>
               <div className="prompts">
-                {prompts.map(prompt => <button key={prompt.label} onClick={() => submit(prompt.text)} disabled={pending || clearing}><span>{prompt.label}</span><ArrowRight size={17} /></button>)}
+                {prompts.map(prompt => <button key={prompt.label} onClick={() => submit(prompt.text)} disabled={pending || clearing || retrySeconds > 0}><span>{prompt.label}</span><ArrowRight size={17} /></button>)}
               </div>
               <p className="welcome-note">Worldwide itineraries, dated weather forecasts and currency conversions. Prices and availability need separate verification.</p>
             </section>
@@ -141,13 +162,13 @@ export default function App() {
         </div>
 
         <div className="composer-area">
-          {error && <div className="error" role="alert"><span>{error}</span>{failedText && <button onClick={() => submit(failedText)} disabled={pending}>Retry message</button>}<button className="error-close" onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
+          {error && <div className="error" role="alert"><span>{error}</span>{failedText && <button onClick={() => submit(failedText)} disabled={pending || retrySeconds > 0}>{retrySeconds > 0 ? `Retry in ${retrySeconds}s` : 'Retry message'}</button>}<button className="error-close" onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
           <form className="composer" onSubmit={e => { e.preventDefault(); submit() }}>
             <label className="sr-only" htmlFor="message">Ask WanderAI about your trip</label>
             <textarea id="message" ref={textarea} rows="1" value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={onKeyDown} placeholder="Where would you like to go?" maxLength={4000} disabled={pending || clearing} />
-            <button type="submit" className="send-button" disabled={!draft.trim() || pending || clearing} aria-label="Send message"><Send size={18} /></button>
+            <button type="submit" className="send-button" disabled={!draft.trim() || pending || clearing || retrySeconds > 0} aria-label="Send message"><Send size={18} /></button>
           </form>
-          <p className="composer-hint">Press Enter to send · Shift + Enter for a new line</p>
+          <p className="composer-hint">{retrySeconds > 0 ? `Groq usage limit · try again in ${retrySeconds}s` : 'Press Enter to send · Shift + Enter for a new line'}</p>
         </div>
       </main>
     </div>

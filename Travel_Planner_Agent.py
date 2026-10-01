@@ -2,15 +2,18 @@
 import json
 import os
 import re
+import threading
+import time
 from typing import TypedDict, Annotated, List
 import operator
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_core.tools import tool
+from groq import RateLimitError
 from backend.travel_services import convert_currency, resolve_location, weather_forecast
 
 SCOPE_REPLY = "I can help with trips and travel only. Ask me about destinations, itineraries, transport, stays, packing, or travel budgets."
-SYSTEM_INSTRUCTION = """You are WanderAI, a practical worldwide travel planner. Answer only trip and travel questions; decline unrelated parts briefly. Keep conversation context. For named places, call resolve_destination before a place-specific plan. If it returns multiple places, ask which country or region the user means; if unresolved, do not invent coordinates or place facts. Plan for the supplied destination, dates or season, duration, interests, party size, budget and origin. Dates, origin, budget and home currency are optional: never withhold an itinerary to ask for them; state assumptions and plan now. Ask a question only when the destination or another truly essential detail is missing. Give readable day-by-day sections with short bullets rather than wide Markdown tables. Use destination local time, usual currency and appropriate units. Use get_destination_weather for actual weather and convert_trip_currency for exchange rates; report exact provider source, observation date and retrieval time from tool output. Copy tool values and weather condition descriptions faithfully; do not reinterpret numeric weather codes. Never invent a forecast, rate or tool result. Dates beyond a forecast horizon may receive clearly labeled general seasonal guidance, never a daily forecast. Numerical trip costs are illustrative estimates only when grounded in user-supplied amounts or a cited current source; distinguish local costs from converted amounts and use a single rate for any conversion. Prices, visas, opening hours, transport schedules and availability are not verified here. Do not promise bookings or live prices. Packing suggestions are general."""
+SYSTEM_INSTRUCTION = """You are WanderAI, a practical worldwide travel planner. Answer only trip and travel questions; decline unrelated parts briefly. Keep conversation context. For named places in a place-specific plan, call resolve_destination. For weather requests, call get_destination_weather directly; it already resolves the place. If a tool reports ambiguity, ask which country or region the user means. Never invent coordinates. Plan for the supplied destination, dates or season, duration, interests, party size, budget and origin. Dates, origin, budget and home currency are optional: never withhold an itinerary to ask for them; state assumptions and plan now. Ask a question only when the destination or another truly essential detail is missing. Give readable day-by-day sections with short bullets rather than wide Markdown tables. Use destination local time, usual currency and appropriate units. Use get_destination_weather for actual weather and convert_trip_currency for exchange rates; report exact provider source, observation date and retrieval time from tool output. Copy tool values and weather condition descriptions faithfully; do not reinterpret numeric weather codes. Never invent a forecast, rate or tool result. Dates beyond a forecast horizon may receive clearly labeled general seasonal guidance, never a daily forecast. Numerical trip costs are illustrative estimates only when grounded in user-supplied amounts or a cited current source; distinguish local costs from converted amounts and use a single rate for any conversion. Prices, visas, opening hours, transport schedules and availability are not verified here. Do not promise bookings or live prices. Packing suggestions are general."""
 
 TRAVEL_CUE = re.compile(
     r"\b(?:trip|travel|travelling|traveling|tour|tourism|itinerary|holiday|vacation|destination|"
@@ -182,11 +185,59 @@ def build_graph(llm):
     return tg.compile()
 
 
+class RateLimitFallback:
+    """Try a second Groq model only when the primary model reaches a limit."""
+
+    def __init__(self, primary, fallback):
+        self.primary = primary
+        self.fallback = fallback
+
+    def bind_tools(self, available_tools):
+        primary = self.primary.bind_tools(available_tools)
+        fallback = self.fallback.bind_tools(available_tools)
+
+        class Bound:
+            def __init__(self):
+                self.retry_primary_at = 0.0
+                self.lock = threading.Lock()
+
+            def invoke(self, messages):
+                with self.lock:
+                    limited = time.monotonic() < self.retry_primary_at
+                if limited:
+                    return fallback.invoke(messages)
+                try:
+                    return primary.invoke(messages)
+                except RateLimitError as exc:
+                    try:
+                        delay = max(1, min(86400, int(float(exc.response.headers.get("retry-after", "30")))))
+                    except (TypeError, ValueError, OverflowError):
+                        delay = 30
+                    with self.lock:
+                        self.retry_primary_at = max(self.retry_primary_at, time.monotonic() + delay)
+                    return fallback.invoke(messages)
+
+        return Bound()
+
+
 def make_groq_graph():
     from langchain_groq import ChatGroq
     if not os.getenv("GROQ_API_KEY", "").strip():
         raise RuntimeError("GROQ_API_KEY is missing")
-    return build_graph(ChatGroq(model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"), temperature=0.3, timeout=45, max_retries=1))
+    primary_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+    fallback_model = os.getenv("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b").strip()
+
+    def configured_model(name):
+        kwargs = {"model": name, "temperature": 0.3, "timeout": 40,
+                  "max_retries": 0, "max_tokens": 2400}
+        if name.startswith("openai/gpt-oss-"):
+            kwargs["reasoning_effort"] = "low"
+        return ChatGroq(**kwargs)
+
+    primary = configured_model(primary_model)
+    if fallback_model and fallback_model != primary_model:
+        return build_graph(RateLimitFallback(primary, configured_model(fallback_model)))
+    return build_graph(primary)
 
 
 # ── CLI entry point (NOT executed on import by Agent_app.py) ──────

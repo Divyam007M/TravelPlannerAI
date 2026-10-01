@@ -36,3 +36,23 @@ for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['mob
     })
   }
 }
+
+test('waits for Groq retry time and keeps a failed message available', async ({ page }) => {
+  let calls = 0
+  await page.route('**/api/chat', route => {
+    calls += 1
+    return route.fulfill(calls === 1
+      ? { status: 429, contentType: 'application/json', headers: { 'Retry-After': '2' }, body: JSON.stringify({ detail: 'Groq has reached a usage limit. Please retry in 2 seconds.' }) }
+      : { status: 200, contentType: 'application/json', body: JSON.stringify({ session_id: sessionId, reply: 'A relaxed Lisbon plan.' }) })
+  })
+  await page.goto('/')
+  await page.locator('#message').fill('Plan a trip to Lisbon, Portugal')
+  await page.getByRole('button', { name: 'Send message' }).click()
+  await expect(page.getByRole('alert')).toContainText('Groq has reached a usage limit')
+  const retry = page.getByRole('button', { name: /Retry in|Retry message/ })
+  await expect(retry).toBeDisabled()
+  await expect(retry).toBeEnabled({ timeout: 5000 })
+  await retry.click()
+  await expect(page.locator('.message.assistant')).toContainText('A relaxed Lisbon plan.')
+  expect(calls).toBe(2)
+})
