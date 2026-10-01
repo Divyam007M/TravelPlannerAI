@@ -33,6 +33,25 @@ class ServiceTests(unittest.TestCase):
         with patch.object(services, "_fetch_json", side_effect=services.ServiceUnavailable()):
             self.assertEqual(services.resolve_location("Unmapped Place")["status"], "unavailable")
 
+    def test_named_island_with_country_resolves_despite_smaller_namesakes(self):
+        bali_island = {"name": "Bali", "admin1": "Bali", "country": "Indonesia", "country_code": "ID",
+                       "feature_code": "ISL", "latitude": -8.33333, "longitude": 115.0,
+                       "timezone": "Asia/Makassar"}
+        bali_village = {"name": "Bali", "admin1": "North Sumatra", "country": "Indonesia",
+                        "country_code": "ID", "feature_code": "PPL", "latitude": 2.0,
+                        "longitude": 99.0, "timezone": "Asia/Jakarta"}
+        with patch.object(services, "_fetch_json", return_value={"results": [bali_island, bali_village]}):
+            resolved = services.resolve_location("Bali, Indonesia")
+            self.assertEqual(resolved["status"], "resolved")
+            self.assertEqual(resolved["location"]["label"], "Bali, Indonesia")
+            self.assertEqual(resolved["location"]["timezone"], "Asia/Makassar")
+            self.assertEqual(resolved["location"]["usual_currency"], "IDR")
+            self.assertEqual(services.resolve_location("Bali")["status"], "ambiguous")
+        services._cache = services._Cache()
+        with patch.object(services, "_fetch_json", return_value={"results": [bali_village,
+                  {**bali_village, "admin1": "West Java", "latitude": -6.0}]}):
+            self.assertEqual(services.resolve_location("Bali, Indonesia")["status"], "ambiguous")
+
     def test_weather_dates_horizon_and_failure(self):
         forecast = {"timezone": "Asia/Tokyo", "current": {"time": "2026-09-29T12:00", "temperature_2m": 22},
                     "daily": {"time": ["2026-09-29", "2026-09-30", "2026-10-01"],

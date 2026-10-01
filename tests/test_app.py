@@ -83,6 +83,26 @@ class WanderTests(unittest.TestCase):
         self.assertEqual(broader_trip.status_code, 200)
         self.assertEqual(len(self.fake.calls), 3)
 
+    def test_trip_confirmations_keep_context_in_stateful_and_stateless_modes(self):
+        prompt = "plan a 7 days trip to bali, indonesia for couple."
+        first = self.client.post("/api/chat", json={"message": prompt}).json()
+        self.assertEqual(first["reply"], f"Reply 1: {prompt}")
+        confirmed = self.client.post("/api/chat", json={"message": "yes thts correct",
+                                                          "session_id": first["session_id"]}).json()
+        self.assertEqual(confirmed["reply"], "Reply 2: yes thts correct")
+        accepted = self.client.post("/api/chat", json={"message": "okay!",
+                                                         "session_id": first["session_id"]}).json()
+        self.assertEqual(accepted["reply"], "Reply 3: okay!")
+        natural = self.client.post("/api/chat", json={"message": "yes, that's correct",
+                                                        "session_id": first["session_id"]}).json()
+        self.assertEqual(natural["reply"], "Reply 4: yes, that's correct")
+
+        main.app.state.stateless = True
+        history = [{"role": "user", "content": prompt}, {"role": "assistant", "content": first["reply"]}]
+        follow = self.client.post("/api/chat", json={"message": "yes thts correct", "history": history})
+        self.assertEqual(follow.status_code, 200)
+        self.assertEqual(follow.json()["reply"], "Reply 2: yes thts correct")
+
     def test_error_does_not_commit_history(self):
         class Failing:
             def invoke(self, *_args, **_kwargs):
@@ -208,6 +228,89 @@ class WanderTests(unittest.TestCase):
             result = build_graph(CallingLLM("convert_trip_currency", {"amount": 100, "base": "INR", "target": "EUR"})).invoke(
                 {"messages": [HumanMessage(content="Convert 100 INR to EUR for my trip")]})
             self.assertIn("2026-09-28", result["messages"][-1].content)
+
+    def test_resolved_place_retries_unneeded_clarification_once(self):
+        class ClarifyingLLM:
+            def __init__(self):
+                self.calls = []
+
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, messages):
+                self.calls.append(messages)
+                if len(self.calls) == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "resolve_destination", "args": {"destination": "Bali, Indonesia"},
+                        "id": "call-bali", "type": "tool_call",
+                    }])
+                if len(self.calls) == 2:
+                    return AIMessage(content="Which Bali do you mean? Please confirm.")
+                return AIMessage(content="### Day 1\nArrive in Bali.\n### Day 7\nDepart.")
+
+        location = {"status": "resolved", "location": {"label": "Bali, Indonesia", "timezone": "Asia/Makassar"}}
+        llm = ClarifyingLLM()
+        with patch("Travel_Planner_Agent.resolve_location", return_value=location):
+            result = build_graph(llm).invoke({"messages": [HumanMessage(content="Plan a 7 day trip to Bali, Indonesia for a couple") ]})
+        self.assertEqual(len(llm.calls), 3)
+        self.assertEqual(result["messages"][-1].content, "### Day 1\nArrive in Bali.\n### Day 7\nDepart.")
+        self.assertIn("Bali, Indonesia", llm.calls[-1][-3].content)
+
+    def test_genuinely_ambiguous_place_still_asks(self):
+        class ClarifyingLLM:
+            def __init__(self):
+                self.calls = 0
+
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, messages):
+                self.calls += 1
+                if self.calls == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "resolve_destination", "args": {"destination": "Paris"},
+                        "id": "call-paris", "type": "tool_call",
+                    }])
+                return AIMessage(content="Which Paris do you mean?")
+
+        llm = ClarifyingLLM()
+        with patch("Travel_Planner_Agent.resolve_location", return_value={"status": "ambiguous", "candidates": ["Paris, France", "Paris, Texas, United States"]}):
+            result = build_graph(llm).invoke({"messages": [HumanMessage(content="Plan a 3 day trip to Paris") ]})
+        self.assertEqual(llm.calls, 2)
+        self.assertIn("Which Paris", result["messages"][-1].content)
+
+    def test_following_tool_uses_resolved_place_and_skips_invented_daily_cost(self):
+        class BudgetCallingLLM:
+            def __init__(self):
+                self.calls = 0
+
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, _messages):
+                self.calls += 1
+                if self.calls == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "resolve_destination", "args": {"destination": "Bali, Indonesia"},
+                        "id": "call-location", "type": "tool_call",
+                    }])
+                if self.calls == 2:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "estimate_budget", "args": {"city": "Bali", "days": 7,
+                        "travel_class": "mid", "daily_local_amount": 1200000},
+                        "id": "call-budget", "type": "tool_call",
+                    }])
+                return AIMessage(content="### Day 1\nArrive.\n### Day 7\nDepart.")
+
+        location = {"status": "resolved", "location": {"name": "Bali", "label": "Bali, Indonesia",
+                                                  "usual_currency": "IDR"}}
+        with patch("Travel_Planner_Agent.resolve_location", return_value=location) as resolve:
+            result = build_graph(BudgetCallingLLM()).invoke({"messages": [
+                HumanMessage(content="Plan a 7 day trip to Bali, Indonesia for a couple")
+            ]})
+        self.assertEqual([call.args[0] for call in resolve.call_args_list], ["Bali, Indonesia", "Bali, Indonesia"])
+        self.assertIn("No verified local cost data", result["messages"][-2].content)
+        self.assertIn("Day 7", result["messages"][-1].content)
 
     def test_stateless_vercel_context_and_clear(self):
         main.app.state.stateless = True

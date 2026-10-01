@@ -13,7 +13,7 @@ from groq import RateLimitError
 from backend.travel_services import convert_currency, resolve_location, weather_forecast
 
 SCOPE_REPLY = "I can help with trips and travel only. Ask me about destinations, itineraries, transport, stays, packing, or travel budgets."
-SYSTEM_INSTRUCTION = """You are WanderAI, a practical worldwide travel planner. Answer only trip and travel questions; decline unrelated parts briefly. Keep conversation context. For named places in a place-specific plan, call resolve_destination. For weather requests, call get_destination_weather directly; it already resolves the place. If a tool reports ambiguity, ask which country or region the user means. Never invent coordinates. Plan for the supplied destination, dates or season, duration, interests, party size, budget and origin. Dates, origin, budget and home currency are optional: never withhold an itinerary to ask for them; state assumptions and plan now. Ask a question only when the destination or another truly essential detail is missing. Give readable day-by-day sections with short bullets rather than wide Markdown tables. Use destination local time, usual currency and appropriate units. Use get_destination_weather for actual weather and convert_trip_currency for exchange rates; report exact provider source, observation date and retrieval time from tool output. Copy tool values and weather condition descriptions faithfully; do not reinterpret numeric weather codes. Never invent a forecast, rate or tool result. Dates beyond a forecast horizon may receive clearly labeled general seasonal guidance, never a daily forecast. Numerical trip costs are illustrative estimates only when grounded in user-supplied amounts or a cited current source; distinguish local costs from converted amounts and use a single rate for any conversion. Prices, visas, opening hours, transport schedules and availability are not verified here. Do not promise bookings or live prices. Packing suggestions are general."""
+SYSTEM_INSTRUCTION = """You are WanderAI, a practical worldwide travel planner. Answer only trip and travel questions; decline unrelated parts briefly. Keep conversation context. For named places in a place-specific plan, call resolve_destination. For weather requests, call get_destination_weather directly; it already resolves the place. If a tool reports ambiguity, ask which country or region the user means. If the tool resolves a place, accept that resolution and fulfill the original request immediately; do not ask the user to confirm it. A short confirmation from the user means proceed with their original travel request, not merely acknowledge the place. Never invent coordinates. Plan for the supplied destination, dates or season, duration, interests, party size, budget and origin. Dates, origin, budget and home currency are optional: never withhold an itinerary to ask for them; state assumptions and plan now. Do not assume a calendar date that the user has not provided; only request dated weather when dates are given or the user asks for current conditions. Ask a question only when the destination or another truly essential detail is missing. Give readable day-by-day sections with short bullets rather than wide Markdown tables. Use destination local time, usual currency and appropriate units. Use get_destination_weather for actual weather and convert_trip_currency for exchange rates; report exact provider source, observation date and retrieval time from tool output. Copy tool values and weather condition descriptions faithfully; do not reinterpret numeric weather codes. Never invent a forecast, rate or tool result. Dates beyond a forecast horizon may receive clearly labeled general seasonal guidance, never a daily forecast. Numerical trip costs are illustrative estimates only when grounded in user-supplied amounts or a cited current source; distinguish local costs from converted amounts and use a single rate for any conversion. Prices, visas, opening hours, transport schedules and availability are not verified here. Do not promise bookings or live prices. Packing suggestions are general."""
 
 TRAVEL_CUE = re.compile(
     r"\b(?:trip|travel|travelling|traveling|tour|tourism|itinerary|holiday|vacation|destination|"
@@ -31,6 +31,39 @@ FOLLOW_UP_CUE = re.compile(
     r"^(?:what|how) about\b",
     re.IGNORECASE,
 )
+CONFIRMATION_CUE = re.compile(
+    r"^(?:yes|yeah|yep|yup|correct|exactly|right|ok|okay|sure|go ahead|please do|"
+    r"sounds good|that'?s correct|thts correct)"
+    r"(?:[,\s]+(?:that'?s|thts|is)\s+correct)?[.!?\s]*$",
+    re.IGNORECASE,
+)
+ITINERARY_CUE = re.compile(r"\b(?:plan|itinerary)\b", re.IGNORECASE)
+FIRST_DAY_CUE = re.compile(r"\bday[\s\u202f]*1\b", re.IGNORECASE)
+CLARIFICATION_CUE = re.compile(r"\?|\b(?:which|confirm|clarify|do you mean|let me know|assuming you mean)\b", re.IGNORECASE)
+
+
+def _needs_itinerary_retry(messages: list, response: AIMessage) -> bool:
+    """Recover a clear plan request when the model only asks for confirmation."""
+    if (response.tool_calls or not isinstance(response.content, str)
+            or FIRST_DAY_CUE.search(response.content)
+            or not CLARIFICATION_CUE.search(response.content)):
+        return False
+    requests = [str(item.content) for item in messages if isinstance(item, HumanMessage)]
+    if not requests or not any(ITINERARY_CUE.search(item) for item in requests):
+        return False
+    if len(requests) > 1 and not CONFIRMATION_CUE.fullmatch(requests[-1].strip()):
+        return False
+    if any(isinstance(item, AIMessage) and isinstance(item.content, str)
+           and FIRST_DAY_CUE.search(item.content) for item in messages):
+        return False  # The itinerary was already given in an earlier turn.
+    statuses = []
+    for item in messages:
+        if isinstance(item, ToolMessage):
+            try:
+                statuses.append(json.loads(str(item.content)).get("status"))
+            except (ValueError, AttributeError):
+                pass
+    return "ambiguous" not in statuses and ("resolved" in statuses or not statuses)
 UNRELATED_CUE = re.compile(
     r"\b(?:lcm|hcf|gcd|least common multiple|greatest common divisor|photosynthesis|"
     r"quadratic equation|write (?:me )?(?:a )?poem|tell (?:me )?(?:a )?joke|"
@@ -50,7 +83,7 @@ def is_travel_request(message: str, prior_messages: list) -> bool:
         isinstance(item, HumanMessage) and TRAVEL_CUE.search(str(item.content))
         for item in prior_messages
     )
-    if has_trip_context and FOLLOW_UP_CUE.search(message):
+    if has_trip_context and (FOLLOW_UP_CUE.search(message) or CONFIRMATION_CUE.fullmatch(message.strip())):
         return True
     # A bare place name can start a travel conversation, wherever it is.
     if re.fullmatch(r"[\wÀ-ÿ .,'-]{2,80}", message.strip()) and len(message.split()) <= 5:
@@ -149,6 +182,12 @@ def build_graph(llm):
 
     def travel_agent(state: TravelState) -> dict:
         response = bound.invoke([SystemMessage(content=SYSTEM_INSTRUCTION), *state["messages"]])
+        if _needs_itinerary_retry(state["messages"], response):
+            response = bound.invoke([
+                SystemMessage(content=SYSTEM_INSTRUCTION), *state["messages"],
+                AIMessage(content=str(response.content)),
+                HumanMessage(content="Please fulfill my original itinerary request now. If the destination tool resolved the place, use it without asking me to confirm. Include a day-by-day plan beginning with Day 1. Do not assume travel dates or costs."),
+            ])
         return {"messages": [response]}
 
     def route_request(state: TravelState) -> str:
@@ -165,10 +204,39 @@ def build_graph(llm):
 
     def run_tools(state: TravelState) -> dict:
         results = []
+        current_turn = []
+        for message in reversed(state["messages"]):
+            if isinstance(message, HumanMessage):
+                break
+            current_turn.append(message)
+        resolved_place = None
+        for message in current_turn:
+            if isinstance(message, ToolMessage):
+                try:
+                    payload = json.loads(str(message.content))
+                    if payload.get("status") == "resolved":
+                        resolved_place = payload.get("location")
+                        break
+                except (ValueError, AttributeError):
+                    pass
+        user_daily_amount = any(
+            isinstance(message, HumanMessage)
+            and re.search(r"\b(?:daily|per\s+(?:person\s+)?day)\b|/day", str(message.content), re.IGNORECASE)
+            and re.search(r"\d", str(message.content))
+            for message in state["messages"]
+        )
         for tc in state["messages"][-1].tool_calls:
             try:
                 selected = tool_map.get(tc.get("name"))
-                content = str(selected.invoke(tc.get("args", {}))) if selected else "Unknown tool requested."
+                args = dict(tc.get("args") or {})
+                if isinstance(resolved_place, dict):
+                    place_name = str(resolved_place.get("name") or "")
+                    for field in ("city", "destination"):
+                        if field in args and str(args[field]).strip().casefold() == place_name.casefold():
+                            args[field] = resolved_place.get("label") or place_name
+                if tc.get("name") == "estimate_budget" and not user_daily_amount:
+                    args["daily_local_amount"] = None
+                content = str(selected.invoke(args)) if selected else "Unknown tool requested."
             except Exception:
                 content = "Invalid tool arguments. Check supported values and try again."
             results.append(ToolMessage(content=content, tool_call_id=tc.get("id") or "unknown"))

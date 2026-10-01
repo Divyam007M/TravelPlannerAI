@@ -112,6 +112,18 @@ def resolve_location(query: str) -> dict:
             _name(item.get("country")), _name(item.get("country_code")),
             _name(item.get("admin1")), _name(item.get("admin2")),
         }]
+        # A country alone can contain several settlements with the same name.
+        # Prefer a single matching island or administrative region only when the
+        # user explicitly supplied that country (e.g. Bali, Indonesia). Ordinary
+        # duplicate settlements still need clarification.
+        country_matches = [item for item in candidates if qualifier_name in {
+            _name(item.get("country")), _name(item.get("country_code")),
+        }]
+        primary_regions = [item for item in country_matches
+                           if _name(item.get("admin1")) == _name(place_name)
+                           and item.get("feature_code") in {"ISL", "ADM1"}]
+        if len(primary_regions) == 1:
+            candidates = primary_regions
     if not candidates:
         result = {"status": "not_found", "message": f"Could not resolve {query!r}. Please add a country or region; no coordinates were assumed."}
     else:
