@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from backend import main
-from Travel_Planner_Agent import SCOPE_REPLY, RateLimitFallback, build_graph, estimate_budget, get_packing_list
+from Travel_Planner_Agent import SCOPE_REPLY, RateLimitFallback, RetryOnRateLimit, build_graph, estimate_budget, get_packing_list
 
 
 class FakeLLM:
@@ -85,7 +85,8 @@ class WanderTests(unittest.TestCase):
 
     def test_trip_confirmations_keep_context_in_stateful_and_stateless_modes(self):
         prompt = "plan a 7 days trip to bali, indonesia for couple."
-        first = self.client.post("/api/chat", json={"message": prompt}).json()
+        with patch("Travel_Planner_Agent._verified_trip_location", return_value={"label": "Bali, Indonesia"}):
+            first = self.client.post("/api/chat", json={"message": prompt}).json()
         self.assertEqual(first["reply"], f"Reply 1: {prompt}")
         confirmed = self.client.post("/api/chat", json={"message": "yes thts correct",
                                                           "session_id": first["session_id"]}).json()
@@ -157,6 +158,86 @@ class WanderTests(unittest.TestCase):
         self.assertIsInstance(fallback.calls[0][0], SystemMessage)
         graph.invoke({"messages": [HumanMessage(content="Plan a trip to Tokyo")]})
         self.assertEqual(primary.calls, 1)  # honor the provider's retry window
+
+    def test_short_rate_limit_waits_once_and_long_limit_remains_visible(self):
+        class LimitedThenReady:
+            def __init__(self, delay):
+                self.delay = delay
+                self.calls = 0
+
+            def invoke(self, _messages):
+                self.calls += 1
+                if self.calls == 1:
+                    response = httpx.Response(429, headers={"retry-after": str(self.delay)},
+                                              request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
+                    raise RateLimitError("limited", response=response, body={})
+                return AIMessage(content="Trip plan")
+
+        short = LimitedThenReady(2)
+        with patch("Travel_Planner_Agent.time.sleep") as sleep:
+            self.assertEqual(RetryOnRateLimit(short).invoke([]).content, "Trip plan")
+        sleep.assert_called_once_with(2.25)
+        self.assertEqual(short.calls, 2)
+
+        long = LimitedThenReady(3600)
+        with patch("Travel_Planner_Agent.time.sleep") as sleep:
+            with self.assertRaises(RateLimitError):
+                RetryOnRateLimit(long).invoke([])
+        sleep.assert_not_called()
+        self.assertEqual(long.calls, 1)
+
+    def test_fallback_waits_for_short_limit_when_both_models_are_limited(self):
+        class Limited:
+            def __init__(self, fail_count, delay):
+                self.calls, self.fail_count, self.delay = 0, fail_count, delay
+
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, _messages):
+                self.calls += 1
+                if self.calls <= self.fail_count:
+                    response = httpx.Response(429, headers={"retry-after": str(self.delay)},
+                                              request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
+                    raise RateLimitError("limited", response=response, body={})
+                return AIMessage(content="### Day 1\nArrive")
+
+        primary, fallback = Limited(10, 30), Limited(1, 22)
+        with patch("Travel_Planner_Agent.time.sleep") as sleep:
+            result = build_graph(RateLimitFallback(primary, fallback)).invoke({
+                "messages": [HumanMessage(content="Plan a Goa trip")]
+            })
+        self.assertIn("Day 1", result["messages"][-1].content)
+        sleep.assert_called_once_with(22.25)
+        self.assertEqual((primary.calls, fallback.calls), (1, 2))
+
+    def test_explicit_global_itinerary_uses_one_model_call(self):
+        class SingleCallLLM:
+            def __init__(self):
+                self.calls = []
+
+            def bind_tools(self, _tools):
+                class UnexpectedToolCall:
+                    def invoke(self, _messages):
+                        raise AssertionError("Simple itinerary should use the verified place")
+                return UnexpectedToolCall()
+
+            def invoke(self, messages):
+                self.calls.append(messages)
+                return AIMessage(content="### Day 1\nArrive in Bali.\n### Day 7\nDepart.")
+
+        location = {"status": "resolved", "location": {"label": "Bali, Indonesia", "country": "Indonesia",
+                                                  "region": "Bali", "timezone": "Asia/Makassar",
+                                                  "usual_currency": "IDR"}}
+        llm = SingleCallLLM()
+        with patch("Travel_Planner_Agent.resolve_location", return_value=location) as resolve:
+            result = build_graph(llm).invoke({"messages": [
+                HumanMessage(content="plan a 7 days trip to bali, indonesia for couple.")
+            ]})
+        resolve.assert_called_once_with("bali, indonesia")
+        self.assertEqual(len(llm.calls), 1)
+        self.assertIn("Asia/Makassar", llm.calls[0][0].content)
+        self.assertIn("Day 7", result["messages"][-1].content)
 
     def test_missing_key(self):
         main._graph = None
@@ -250,7 +331,8 @@ class WanderTests(unittest.TestCase):
 
         location = {"status": "resolved", "location": {"label": "Bali, Indonesia", "timezone": "Asia/Makassar"}}
         llm = ClarifyingLLM()
-        with patch("Travel_Planner_Agent.resolve_location", return_value=location):
+        with patch("Travel_Planner_Agent.resolve_location", return_value=location), \
+             patch("Travel_Planner_Agent._verified_trip_location", return_value=None):
             result = build_graph(llm).invoke({"messages": [HumanMessage(content="Plan a 7 day trip to Bali, Indonesia for a couple") ]})
         self.assertEqual(len(llm.calls), 3)
         self.assertEqual(result["messages"][-1].content, "### Day 1\nArrive in Bali.\n### Day 7\nDepart.")
@@ -304,7 +386,8 @@ class WanderTests(unittest.TestCase):
 
         location = {"status": "resolved", "location": {"name": "Bali", "label": "Bali, Indonesia",
                                                   "usual_currency": "IDR"}}
-        with patch("Travel_Planner_Agent.resolve_location", return_value=location) as resolve:
+        with patch("Travel_Planner_Agent.resolve_location", return_value=location) as resolve, \
+             patch("Travel_Planner_Agent._verified_trip_location", return_value=None):
             result = build_graph(BudgetCallingLLM()).invoke({"messages": [
                 HumanMessage(content="Plan a 7 day trip to Bali, Indonesia for a couple")
             ]})

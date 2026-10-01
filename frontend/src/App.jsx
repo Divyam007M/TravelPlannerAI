@@ -21,6 +21,7 @@ export default function App() {
   const [messages, setMessages] = useState(saved.messages)
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
+  const [slowRequest, setSlowRequest] = useState(false)
   const [error, setError] = useState('')
   const [failedText, setFailedText] = useState('')
   const [retryUntil, setRetryUntil] = useState(0)
@@ -39,6 +40,11 @@ export default function App() {
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [retryUntil])
+  useEffect(() => {
+    if (!pending) return undefined
+    const timer = setTimeout(() => setSlowRequest(true), 12000)
+    return () => clearTimeout(timer)
+  }, [pending])
 
   async function submit(text = draft) {
     const value = text.trim()
@@ -47,6 +53,7 @@ export default function App() {
     setDraft('')
     setError('')
     setFailedText('')
+    setSlowRequest(false)
     setPending(true)
     setMessages(prev => [...prev, { role: 'user', content: value }])
     try {
@@ -155,7 +162,7 @@ export default function App() {
                   ? <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ table: PlanTable }} skipHtml>{message.content}</ReactMarkdown></div>
                   : <p>{message.content}</p>}
               </article>)}
-              {pending && <div className="thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span> Shaping your trip…</div>}
+              {pending && <div className="thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span> {slowRequest ? 'Still working — the planner may be waiting for the provider…' : 'Shaping your trip…'}</div>}
               <div ref={bottom} />
             </div>
           )}

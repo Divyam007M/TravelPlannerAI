@@ -1,5 +1,6 @@
 """Server-side LangGraph planner with global location and live data tools."""
 import json
+import math
 import os
 import re
 import threading
@@ -40,6 +41,24 @@ CONFIRMATION_CUE = re.compile(
 ITINERARY_CUE = re.compile(r"\b(?:plan|itinerary)\b", re.IGNORECASE)
 FIRST_DAY_CUE = re.compile(r"\bday[\s\u202f]*1\b", re.IGNORECASE)
 CLARIFICATION_CUE = re.compile(r"\?|\b(?:which|confirm|clarify|do you mean|let me know|assuming you mean)\b", re.IGNORECASE)
+EXPLICIT_PLACE_CUE = re.compile(
+    r"\b(?:to|in)\s+([^,?.!]{2,60}),\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{1,60}?)"
+    r"(?=\s+(?:for|with|from|on|during|starting|and|as)\b|[.!?]|$)",
+    re.IGNORECASE,
+)
+LIVE_DATA_CUE = re.compile(r"\b(?:weather|forecast|convert|exchange|rate|budget|packing)\b", re.IGNORECASE)
+MAX_RATE_WAIT_SECONDS = 25
+
+
+def _verified_trip_location(message: str) -> dict | None:
+    """Resolve an explicitly qualified itinerary before using an LLM call."""
+    if not ITINERARY_CUE.search(message) or LIVE_DATA_CUE.search(message):
+        return None
+    match = EXPLICIT_PLACE_CUE.search(message)
+    if not match:
+        return None
+    result = resolve_location(f"{match.group(1).strip()}, {match.group(2).strip()}")
+    return result.get("location") if result.get("status") == "resolved" else None
 
 
 def _needs_itinerary_retry(messages: list, response: AIMessage) -> bool:
@@ -181,10 +200,23 @@ def build_graph(llm):
     bound = llm.bind_tools(tools)
 
     def travel_agent(state: TravelState) -> dict:
-        response = bound.invoke([SystemMessage(content=SYSTEM_INSTRUCTION), *state["messages"]])
+        latest_user = next((item for item in reversed(state["messages"]) if isinstance(item, HumanMessage)), None)
+        verified = _verified_trip_location(str(latest_user.content)) if latest_user else None
+        if verified:
+            # The server has already checked this place, so no model tool round trip
+            # is needed for a straightforward itinerary.
+            context = ("Verified destination from Open-Meteo geocoding: "
+                       + json.dumps({key: verified.get(key) for key in ("label", "country", "region", "timezone", "usual_currency")}, ensure_ascii=False)
+                       + ". Give the requested day-by-day trip plan now. No live weather, price or exchange-rate data was fetched.")
+            prompt = [SystemMessage(content=SYSTEM_INSTRUCTION + "\n" + context), *state["messages"]]
+            invoke = llm.invoke
+        else:
+            prompt = [SystemMessage(content=SYSTEM_INSTRUCTION), *state["messages"]]
+            invoke = bound.invoke
+        response = invoke(prompt)
         if _needs_itinerary_retry(state["messages"], response):
-            response = bound.invoke([
-                SystemMessage(content=SYSTEM_INSTRUCTION), *state["messages"],
+            response = invoke([
+                prompt[0], *state["messages"],
                 AIMessage(content=str(response.content)),
                 HumanMessage(content="Please fulfill my original itinerary request now. If the destination tool resolved the place, use it without asking me to confirm. Include a day-by-day plan beginning with Day 1. Do not assume travel dates or costs."),
             ])
@@ -259,11 +291,14 @@ class RateLimitFallback:
     def __init__(self, primary, fallback):
         self.primary = primary
         self.fallback = fallback
+        self.unbound = self._make_invoker(primary, fallback)
 
     def bind_tools(self, available_tools):
-        primary = self.primary.bind_tools(available_tools)
-        fallback = self.fallback.bind_tools(available_tools)
+        return self._make_invoker(self.primary.bind_tools(available_tools),
+                                  self.fallback.bind_tools(available_tools))
 
+    @staticmethod
+    def _make_invoker(primary, fallback):
         class Bound:
             def __init__(self):
                 self.retry_primary_at = 0.0
@@ -273,19 +308,47 @@ class RateLimitFallback:
                 with self.lock:
                     limited = time.monotonic() < self.retry_primary_at
                 if limited:
-                    return fallback.invoke(messages)
+                    return RetryOnRateLimit(fallback).invoke(messages)
                 try:
                     return primary.invoke(messages)
                 except RateLimitError as exc:
-                    try:
-                        delay = max(1, min(86400, int(float(exc.response.headers.get("retry-after", "30")))))
-                    except (TypeError, ValueError, OverflowError):
-                        delay = 30
+                    delay = _retry_after(exc, maximum=86400) or 30
                     with self.lock:
                         self.retry_primary_at = max(self.retry_primary_at, time.monotonic() + delay)
-                    return fallback.invoke(messages)
+                    return RetryOnRateLimit(fallback).invoke(messages)
 
         return Bound()
+
+    def invoke(self, messages):
+        return self.unbound.invoke(messages)
+
+
+def _retry_after(exc: RateLimitError, *, maximum: int = MAX_RATE_WAIT_SECONDS) -> int | None:
+    try:
+        seconds = math.ceil(float(exc.response.headers.get("retry-after", "")))
+        return seconds if 1 <= seconds <= maximum else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+class RetryOnRateLimit:
+    """Wait once for a short provider reset window; surface longer limits."""
+
+    def __init__(self, model):
+        self.model = model
+
+    def bind_tools(self, available_tools):
+        return RetryOnRateLimit(self.model.bind_tools(available_tools))
+
+    def invoke(self, messages):
+        try:
+            return self.model.invoke(messages)
+        except RateLimitError as exc:
+            delay = _retry_after(exc)
+            if delay is None:
+                raise
+            time.sleep(delay + 0.25)
+            return self.model.invoke(messages)
 
 
 def make_groq_graph():
@@ -305,7 +368,7 @@ def make_groq_graph():
     primary = configured_model(primary_model)
     if fallback_model and fallback_model != primary_model:
         return build_graph(RateLimitFallback(primary, configured_model(fallback_model)))
-    return build_graph(primary)
+    return build_graph(RetryOnRateLimit(primary))
 
 
 # ── CLI entry point (NOT executed on import by Agent_app.py) ──────
